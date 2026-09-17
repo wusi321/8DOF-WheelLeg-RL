@@ -1,0 +1,23 @@
+robot: 8DOFROBOT2
+policy_hz: 50
+physics_hz: 200
+num_envs: 2048
+wandb:
+  enabled: true
+  project: wheelleg-rl
+  entity: null
+curriculum:
+  flat_balance: true
+  velocity_x_y_yaw: true
+  obstacles: true
+  max_obstacle_height_m: 0.12
+  recovery: true
+  standup: true
+  crouch: true
+  prone: true
+  roulade: true
+  fall_recovery_timeout_s: 4.0
+observations:
+  proprioception: true
+  lidar_height_scan: false
+  max_command_speed_mps: 1.0
