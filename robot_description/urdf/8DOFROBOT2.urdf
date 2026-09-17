@@ -1,0 +1,258 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- This URDF was automatically created by SolidWorks to URDF Exporter! Originally created by Stephen Brawner (brawner@gmail.com) 
+     Commit Version: v1.0.4-1-gcaeea21-dirty  Build Version: 1.6.9673.41765
+     For more information, please see http://wiki.ros.org/sw_urdf_exporter -->
+<robot name="8DOFROBOT2">
+  <link name="base_link">
+    <inertial>
+      <origin xyz="0 0 0.03" rpy="0 0 0" />
+      <mass value="0.5" />
+      <inertia ixx="0.00092" ixy="0" ixz="0" iyy="0.00117" iyz="0" izz="0.00180" />
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="package://8DOFROBOT2/meshes/base_link.STL" />
+      </geometry>
+      <material name="">
+        <color rgba="0.752941176470588 0.752941176470588 0.752941176470588 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="package://8DOFROBOT2/meshes/base_link.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <link name="left_hip_Link">
+    <inertial>
+      <origin xyz="0.05 0 0" rpy="0 0 0" />
+      <mass value="0.2" />
+      <inertia ixx="0.00003" ixy="0" ixz="0" iyy="0.00027" iyz="0" izz="0.00026" />
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="package://8DOFROBOT2/meshes/left_hip_Link.STL" />
+      </geometry>
+      <material name="">
+        <color rgba="0.752941176470588 0.752941176470588 0.752941176470588 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="package://8DOFROBOT2/meshes/left_hip_Link.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint name="left_hip_joint" type="revolute">
+    <origin xyz="-0.0462500000000197 0.0787267604552256 0.0299999999999798" rpy="0 0 0" />
+    <parent link="base_link" />
+    <child link="left_hip_Link" />
+    <axis xyz="1 0 0" />
+    <limit lower="-0.9075712110370514" upper="0.9075712110370514" effort="0" velocity="0" />
+  </joint>
+  <link name="left_thigh_link">
+    <inertial>
+      <origin xyz="0 0 -0.04" rpy="0 0 0" />
+      <mass value="0.1" />
+      <inertia ixx="0.00008" ixy="0" ixz="0" iyy="0.00008" iyz="0" izz="0" />
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="package://8DOFROBOT2/meshes/left_thigh_link.STL" />
+      </geometry>
+      <material name="">
+        <color rgba="0.792156862745098 0.819607843137255 0.933333333333333 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="package://8DOFROBOT2/meshes/left_thigh_link.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint name="left_thigh_joint" type="revolute">
+    <origin xyz="0.0774767604552631 0.0167732395447309 0" rpy="0 0 0" />
+    <parent link="left_hip_Link" />
+    <child link="left_thigh_link" />
+    <axis xyz="0 1 0" />
+    <limit lower="-0.8726646259971648" upper="1.3089969389957472" effort="0" velocity="0" />
+  </joint>
+  <link name="left_shank_link">
+    <inertial>
+      <origin xyz="0 0.01 -0.08" rpy="0 0 0" />
+      <mass value="0.15" />
+      <inertia ixx="0.00010" ixy="0" ixz="0" iyy="0.00010" iyz="0.00001" izz="0.00001" />
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="package://8DOFROBOT2/meshes/left_shank_link.STL" />
+      </geometry>
+      <material name="">
+        <color rgba="0.752941176470588 0.752941176470588 0.752941176470588 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="package://8DOFROBOT2/meshes/left_shank_link.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint name="left_knee_joint " type="revolute">
+    <origin xyz="0 -0.00300000000000789 -0.0900000000000087" rpy="0 0 0" />
+    <parent link="left_thigh_link" />
+    <child link="left_shank_link" />
+    <axis xyz="0 1 0" />
+    <limit lower="-2.792526803190927" upper="0" effort="0" velocity="0" />
+  </joint>
+  <link name="left_wheel_link">
+    <inertial>
+      <origin xyz="0 -0.01 0" rpy="0 0 0" />
+      <mass value="0.1" />
+      <inertia ixx="0.00003" ixy="0" ixz="0" iyy="0.00006" iyz="0" izz="0.00003" />
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="package://8DOFROBOT2/meshes/left_wheel_link.STL" />
+      </geometry>
+      <material name="">
+        <color rgba="0.792156862745098 0.819607843137255 0.933333333333333 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="package://8DOFROBOT2/meshes/left_wheel_link.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint name="left_wheel_joint" type="continuous">
+    <origin xyz="0.00127323954474146 0.0235000000000081 -0.0926849666847982" rpy="0 0 0" />
+    <parent link="left_shank_link" />
+    <child link="left_wheel_link" />
+    <axis xyz="0 1 0" />
+  </joint>
+  <link name="right_hip_link">
+    <inertial>
+      <origin xyz="0.05 0 0" rpy="0 0 0" />
+      <mass value="0.2" />
+      <inertia ixx="0.00003" ixy="0" ixz="0" iyy="0.00027" iyz="0" izz="0.00026" />
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="package://8DOFROBOT2/meshes/right_hip_link.STL" />
+      </geometry>
+      <material name="">
+        <color rgba="0.752941176470588 0.752941176470588 0.752941176470588 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="package://8DOFROBOT2/meshes/right_hip_link.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint name="right_hip_joint" type="revolute">
+    <origin xyz="-0.0462499999999992 -0.0787267604552557 0.0300000000000089" rpy="0 0 0" />
+    <parent link="base_link" />
+    <child link="right_hip_link" />
+    <axis xyz="1 0 0" />
+    <limit lower="-0.9075712110370514" upper="0.9075712110370514" effort="0" velocity="0" />
+  </joint>
+  <link name="right_thigh_link">
+    <inertial>
+      <origin xyz="0 0 -0.04" rpy="0 0 0" />
+      <mass value="0.1" />
+      <inertia ixx="0.00008" ixy="0" ixz="0" iyy="0.00008" iyz="0" izz="0" />
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="package://8DOFROBOT2/meshes/right_thigh_link.STL" />
+      </geometry>
+      <material name="">
+        <color rgba="0.792156862745098 0.819607843137255 0.933333333333333 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="package://8DOFROBOT2/meshes/right_thigh_link.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint name="right_thigh_joint" type="revolute">
+    <origin xyz="0.0774767604552646 -0.0167732395447355 0" rpy="0 0 0" />
+    <parent link="right_hip_link" />
+    <child link="right_thigh_link" />
+    <axis xyz="0 1 0" />
+    <limit lower="-0.8726646259971648" upper="1.3089969389957472" effort="0" velocity="0" />
+  </joint>
+  <link name="right_shank_link">
+    <inertial>
+      <origin xyz="0 -0.01 -0.08" rpy="0 0 0" />
+      <mass value="0.15" />
+      <inertia ixx="0.00010" ixy="0" ixz="0" iyy="0.00010" iyz="-0.00001" izz="0.00001" />
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="package://8DOFROBOT2/meshes/right_shank_link.STL" />
+      </geometry>
+      <material name="">
+        <color rgba="0.752941176470588 0.752941176470588 0.752941176470588 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="package://8DOFROBOT2/meshes/right_shank_link.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint name="right_knee_joint" type="revolute">
+    <origin xyz="0 0.00299999999999345 -0.0900000000000029" rpy="0 0 0" />
+    <parent link="right_thigh_link" />
+    <child link="right_shank_link" />
+    <axis xyz="0 1 0" />
+    <limit lower="-2.792526803190927" upper="0" effort="0" velocity="0" />
+  </joint>
+  <link name="right_wheel_link">
+    <inertial>
+      <origin xyz="0 0.01 0" rpy="0 0 0" />
+      <mass value="0.1" />
+      <inertia ixx="0.00003" ixy="0" ixz="0" iyy="0.00006" iyz="0" izz="0.00003" />
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="package://8DOFROBOT2/meshes/right_wheel_link.STL" />
+      </geometry>
+      <material name="">
+        <color rgba="0.792156862745098 0.819607843137255 0.933333333333333 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="package://8DOFROBOT2/meshes/right_wheel_link.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint name="right_wheel_joint" type="continuous">
+    <origin xyz="0.00127323954474989 -0.0234999999999859 -0.0926849666847985" rpy="0 0 0" />
+    <parent link="right_shank_link" />
+    <child link="right_wheel_link" />
+    <axis xyz="0 1 0" />
+  </joint>
+</robot>

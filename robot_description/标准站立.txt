@@ -1,0 +1,17 @@
+		base_link
+                  /           \
+          left_hip_joint    right_hip_joint      0.00rad
+                ↓                ↓
+          left_hip_link     right_hip_link
+                ↓                ↓
+        left_thigh_joint   right_thigh_joint   1.02rad
+                ↓                ↓
+        left_thigh_link    right_thigh_link
+                ↓                ↓
+         left_knee_joint    right_knee_joint   -1.57rad
+                ↓                ↓
+        left_shank_link    right_shank_link
+                ↓                ↓
+         left_wheel_joint   right_wheel_joint   0.00rad
+                ↓                ↓
+        left_wheel_link    right_wheel_link
