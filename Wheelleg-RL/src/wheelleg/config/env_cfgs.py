@@ -4,7 +4,7 @@ from .base_env_cfg import flat_env_cfg as _base_flat_env_cfg, rough_env_cfg as _
 from ..robot_cfg import get_robot_cfg
 
 def _adapt(cfg, play=False):
-    cfg.scene.entities = {"robot": get_robot_cfg()}
+    cfg.scene.entities = {"wheelleg": get_robot_cfg()}
     cfg.scene.num_envs = 2048
     if play:
         cfg.episode_length_s = int(1e9)
