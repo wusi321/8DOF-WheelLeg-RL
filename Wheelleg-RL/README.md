@@ -118,6 +118,17 @@ Actor 单步观测为 53 维：
 
 ## 环境安装与基本命令
 
+`setup_ubuntu.sh` 支持国内镜像自动测速和交互选择。默认分别测试 APT 与 PyPI 镜像并选择最快者；也可以手动选择，或通过环境变量固定镜像：
+
+```bash
+bash scripts/setup_ubuntu.sh                 # 自动测速
+bash scripts/setup_ubuntu.sh --interactive   # 交互选择 APT/PyPI
+WHEELLEG_MIRROR=ustc bash scripts/setup_ubuntu.sh
+WHEELLEG_APT_MIRROR=aliyun WHEELLEG_PYPI_MIRROR=tuna bash scripts/setup_ubuntu.sh
+```
+
+候选源包括清华、阿里云、中科大、腾讯云、华为云、北外、上海交大和南京大学。APT 源写入独立的 `wheelleg-mirror.list`，原有源文件保留；Python 依赖通过当前命令的 `UV_INDEX_URL` 使用所选 PyPI 源。
+
 在本目录执行：
 
 ```bash
