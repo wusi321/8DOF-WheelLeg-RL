@@ -209,7 +209,7 @@ def safe_height_scan(env: ManagerBasedRlEnv, sensor_name: str) -> torch.Tensor:
 def safe_base_lin_vel(env: ManagerBasedRlEnv) -> torch.Tensor:
     """Safely fetch base linear velocity, replacing NaNs/infs with finite values."""
     from mjlab.envs.mdp.observations import base_lin_vel
-    result = base_lin_vel(env)
+    result = base_lin_vel(env, asset_cfg=SceneEntityCfg("wheelleg"))
     return torch.nan_to_num(result, nan=0.0, posinf=100.0, neginf=-100.0)
 
 

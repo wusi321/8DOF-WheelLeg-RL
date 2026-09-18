@@ -175,11 +175,14 @@ def _make_base_env_cfg() -> ManagerBasedRlEnvCfg:
     # ------------------
     actor_terms = {
         "base_ang_vel": ObservationTermCfg(
-            func=envs_mdp.base_ang_vel, scale=0.25,
+            func=envs_mdp.base_ang_vel,
+            params={"asset_cfg": SceneEntityCfg("wheelleg")},
+            scale=0.25,
             noise=Unoise(n_min=-0.2, n_max=0.2),
         ),
         "projected_gravity": ObservationTermCfg(
             func=velocity_mdp.projected_gravity,
+            params={"asset_cfg": SceneEntityCfg("wheelleg")},
             noise=Unoise(n_min=-0.05, n_max=0.05),
         ),
         "command": ObservationTermCfg(
@@ -324,10 +327,10 @@ def _make_base_env_cfg() -> ManagerBasedRlEnvCfg:
         "base_height_l2": RewardTermCfg(func=base_height_l2, weight=-2.0, params={"target_height": 0.36}),
         "body_ang_vel": RewardTermCfg(func=velocity_mdp.body_angular_velocity_penalty, weight=-0.1, params={"asset_cfg": SceneEntityCfg("wheelleg", body_names=("base_link",))}),
         "is_terminated": RewardTermCfg(func=envs_mdp.is_terminated, weight=-200.0),
-        "joint_torques": RewardTermCfg(func=envs_mdp.joint_torques_l2, weight=-2.0e-4),
-        "joint_acc": RewardTermCfg(func=envs_mdp.joint_acc_l2, weight=-2.5e-7),
+        "joint_torques": RewardTermCfg(func=envs_mdp.joint_torques_l2, weight=-2.0e-4, params={"asset_cfg": SceneEntityCfg("wheelleg")}),
+        "joint_acc": RewardTermCfg(func=envs_mdp.joint_acc_l2, weight=-2.5e-7, params={"asset_cfg": SceneEntityCfg("wheelleg")}),
         "action_rate": RewardTermCfg(func=envs_mdp.action_rate_l2, weight=-0.01),
-        "joint_pos_limits": RewardTermCfg(func=envs_mdp.joint_pos_limits, weight=-10.0),
+        "joint_pos_limits": RewardTermCfg(func=envs_mdp.joint_pos_limits, weight=-10.0, params={"asset_cfg": SceneEntityCfg("wheelleg")}),
         "wheel_roll_tracking": RewardTermCfg(func=wheel_roll_tracking, weight=2.0, params={"command_name": "twist", "wheel_radius": 0.10, "wheel_track": 0.32, "std": 3.0, "asset_cfg": SceneEntityCfg("wheelleg", joint_names=("(left|right)_wheel_joint",))}),
         "wheel_contact_bonus": RewardTermCfg(func=contact_fraction_reward, weight=0.5, params={"sensor_name": "feet_ground_contact"}),
         "feet_air_time": RewardTermCfg(func=velocity_mdp.feet_air_time, weight=0.5, params={"sensor_name": "feet_ground_contact", "threshold_min": 0.1, "threshold_max": 0.5, "command_name": "twist", "command_threshold": 0.1}),
@@ -341,7 +344,7 @@ def _make_base_env_cfg() -> ManagerBasedRlEnvCfg:
     # ------------------
     terminations = {
         "time_out": TerminationTermCfg(func=envs_mdp.time_out, time_out=True),
-        "bad_orientation": TerminationTermCfg(func=envs_mdp.bad_orientation, params={"limit_angle": 1.0}),
+        "bad_orientation": TerminationTermCfg(func=envs_mdp.bad_orientation, params={"limit_angle": 1.0, "asset_cfg": SceneEntityCfg("wheelleg")}),
         "base_ground_contact": TerminationTermCfg(func=velocity_mdp.illegal_contact, params={"sensor_name": "base_ground_contact"}),
         "nan_detection": TerminationTermCfg(func=envs_mdp.nan_detection),
     }
