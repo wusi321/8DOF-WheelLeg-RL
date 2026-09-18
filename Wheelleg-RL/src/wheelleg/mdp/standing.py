@@ -1,17 +1,39 @@
-"""Locomotion clearance and posture constraints (not recovery objectives).
+"""Locomotion posture constraints: stand while moving, but do not reset on posture.
 
-All heights here are the ``base_link`` frame origin above the ground directly
-beneath it, measured by a single downward ray. See ``wheelleg.stance`` for the
-geometry those numbers come from.
+Design
+------
+Height is deliberately **not** a termination condition. Resetting the moment the
+body dips below the target means the robot never experiences the fall it is
+supposed to learn to avoid, so it can only ever be "rescued" by the reset.
+
+Instead:
+
+- standing still at a low posture is allowed and costs almost nothing;
+- lying on the ground is allowed (nothing resets) but is made unprofitable by the
+  ungated height reward and a base-contact penalty;
+- *travelling* while low is penalised hard, so a crawl is never a valid gait.
+
+The moving penalty is linear in the height deficit rather than squared, because
+while the robot is moving the required height is a requirement, not a soft
+preference: a squared barrier would be nearly free just below the threshold and
+would let the policy settle into a crawl a centimetre under the target.
+
+All heights are the ``base_link`` frame origin above the ground directly beneath
+it, measured by a single downward ray. See ``wheelleg.stance`` for the geometry.
 """
 import torch
 
-from ..stance import COLLAPSE_CLEARANCE, MIN_CLEARANCE, NOMINAL_STANCE, STANDING_CLEARANCE
+from ..stance import MIN_CLEARANCE, NOMINAL_STANCE, STANDING_CLEARANCE
 
-# Sentinel returned when the ray finds no ground. It is deliberately negative
-# so that "unknown" can never be mistaken for a measurable clearance, and every
+# Sentinel returned when the ray finds no ground. It is deliberately negative so
+# that "unknown" can never be mistaken for a measurable clearance, and every
 # consumer below treats it as "not measurable" rather than "too low".
 INVALID_CLEARANCE = -1.0
+
+# A robot counts as travelling above either of these. Rotation is included so
+# that spinning in place while crouched is not a way around the moving penalty.
+LINEAR_SPEED_MOVING = 0.15  # m/s
+YAW_RATE_MOVING = 0.3  # rad/s
 
 _LEG_JOINTS = (
     "left_hip_joint", "left_thigh_joint", "left_knee_joint",
@@ -33,26 +55,39 @@ def _measurable(clearance):
     return clearance > INVALID_CLEARANCE
 
 
-def collapsed(env, min_clearance=COLLAPSE_CLEARANCE):
-    """True once the robot is on the ground rather than standing on its wheels."""
-    clearance = base_clearance(env)
-    return _measurable(clearance) & (clearance < min_clearance)
+def moving_gate(env, linear_speed=LINEAR_SPEED_MOVING, yaw_rate=YAW_RATE_MOVING):
+    """How strongly the robot is travelling, 0 (parked) to 1 (clearly moving)."""
+    data = env.scene["wheelleg"].data
+    linear = torch.nan_to_num(data.root_link_lin_vel_b[:, :2])
+    yaw = torch.nan_to_num(data.root_link_ang_vel_b[:, 2])
+    speed = torch.linalg.norm(linear, dim=1)
+    gate = torch.maximum(speed / linear_speed, torch.abs(yaw) / yaw_rate)
+    return torch.clamp(gate, 0.0, 1.0)
 
 
-def low_height_barrier(env, min_clearance=MIN_CLEARANCE):
-    """Squared barrier that grows as the body sinks below the required height.
+def low_posture_locomotion(
+    env,
+    min_clearance=MIN_CLEARANCE,
+    linear_speed=LINEAR_SPEED_MOVING,
+    yaw_rate=YAW_RATE_MOVING,
+):
+    """Height deficit while travelling: the crawl penalty.
 
-    Zero at or above ``min_clearance`` and small just below it, so normal
-    squatting, buffering and leg lifting during a stride cost nothing while a
-    sustained low crawl becomes strongly unprofitable.
+    Zero for a parked robot at any height, so low posture and lying on the ground
+    are legal; it rises linearly as a *moving* robot sinks below the requirement.
     """
     clearance = base_clearance(env)
     deficit = torch.clamp((min_clearance - clearance) / min_clearance, 0.0, 1.0)
-    return torch.where(_measurable(clearance), deficit * deficit, torch.zeros_like(deficit))
+    deficit = torch.where(_measurable(clearance), deficit, torch.zeros_like(deficit))
+    return deficit * moving_gate(env, linear_speed, yaw_rate)
 
 
 def standing_height_error(env, target_height=STANDING_CLEARANCE):
-    """Normalised squared deviation from the working stance height."""
+    """Normalised squared deviation from the working stance height.
+
+    Always active, so a low posture is mildly discouraged and lying on the ground
+    is expensive, without ever ending the episode.
+    """
     clearance = torch.clamp(base_clearance(env), min=0.0)
     return torch.square((clearance - target_height) / target_height)
 
@@ -66,7 +101,7 @@ def standing_pose_error(env):
     return torch.mean(torch.square(joints - target), dim=1)
 
 
-def knee_ground_contact(env):
-    """True when a shank (knee) collides with the terrain — crawling or kneeling."""
-    found = env.scene["knee_ground_contact"].data.found
+def base_ground_contact(env):
+    """True when base_link touches the terrain: the robot is down, not on its wheels."""
+    found = env.scene["base_ground_contact"].data.found
     return (found.reshape(env.num_envs, -1) > 0).any(dim=1)

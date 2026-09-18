@@ -57,13 +57,10 @@ HIP_LIMIT = (-0.9075712110370514, 0.9075712110370514)
 # The mechanically supplied reference stand.
 REFERENCE_STANCE = (0.0, 1.02, -1.57)
 
-# Clearance the locomotion task must hold, in metres.
+# Clearance the locomotion task must hold *while moving*, in metres.
 MIN_CLEARANCE = 0.13
-# Working stance: comfortably above MIN_CLEARANCE so transient squatting and leg
-# lifting during a stride are not punished.
+# Working stance: above MIN_CLEARANCE so a stride can squat and lift legs freely.
 STANDING_CLEARANCE = 0.145
-# Below this the robot is collapsed, not standing; used to end an episode.
-COLLAPSE_CLEARANCE = 0.11
 
 
 class LegPose(NamedTuple):

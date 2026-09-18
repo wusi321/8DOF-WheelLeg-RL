@@ -68,7 +68,6 @@ class ReferenceStanceTests(unittest.TestCase):
         self.assertGreater(heights[-1], heights[0])
 
     def test_thresholds_are_ordered_and_reachable(self):
-        self.assertLess(stance.COLLAPSE_CLEARANCE, stance.MIN_CLEARANCE)
         self.assertLess(stance.MIN_CLEARANCE, stance.STANDING_CLEARANCE)
         self.assertLess(stance.STANDING_CLEARANCE, stance.clearance(0.0, 0.0))
         # The requirement must be reachable at all, with room to spare.
@@ -97,16 +96,31 @@ class RobotConfigTests(unittest.TestCase):
 class EnvironmentConfigTests(unittest.TestCase):
     def test_locomotion_tasks_enforce_the_standing_contract(self):
         source = (root / "src/wheelleg/config/env_cfgs.py").read_text(encoding="utf-8")
-        for term in ("standing.collapsed", "standing.low_height_barrier",
-                     "standing.knee_ground_contact", "standing.standing_height_error"):
+        for term in ("standing.low_posture_locomotion", "standing.standing_height_error",
+                     "standing.base_ground_contact", "standing.moving_gate"):
             self.assertIn(term, source)
-        self.assertIn("COLLAPSE_CLEARANCE", source)
         self.assertIn("MIN_CLEARANCE", source)
+
+    def test_moving_low_is_penalised_but_not_terminated(self):
+        """The whole point: posture is a reward signal, never a reset."""
+        source = (root / "src/wheelleg/config/env_cfgs.py").read_text(encoding="utf-8")
+        self.assertIn("cfg.terminations.pop", source)
+        for name in ("low_base_height", "knee_ground_contact", "base_ground_contact"):
+            self.assertIn(f'"{name}"', source)
+        # No posture term may reappear in the terminations table.
+        self.assertNotIn("cfg.terminations[", source)
 
     def test_recovery_does_not_terminate_on_low_height(self):
         """A recovery task must be allowed to start from the ground."""
         source = (root / "src/wheelleg/config/env_cfgs.py").read_text(encoding="utf-8")
         self.assertIn("enforce_standing=False", source)
+
+    def test_crawl_penalty_dominates_velocity_tracking(self):
+        """Travelling at 0.12 m must cost more than the tracking reward pays."""
+        penalty_weight = 100.0
+        deficit = (stance.MIN_CLEARANCE - 0.12) / stance.MIN_CLEARANCE
+        # Rewards are dt-scaled, so 50 steps/s x 0.02 s collapses weight to per-second.
+        self.assertGreater(penalty_weight * deficit, 2.0)
 
     def test_reward_clamp_is_gone(self):
         """The global >=0 reward clamp would neutralise the anti-crawl barrier."""
