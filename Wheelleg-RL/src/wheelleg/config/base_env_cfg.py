@@ -308,11 +308,11 @@ def _make_base_env_cfg() -> ManagerBasedRlEnvCfg:
             params={"asset_cfg": SceneEntityCfg("wheelleg"), "ranges": (0.9, 1.1), "operation": "scale", "distribution": "log_uniform"},
         ),
         "body_mass_base": EventTermCfg(
-            func=envs_dr.body_mass, mode="startup",
+            func=envs_dr.pseudo_inertia, mode="startup",
             params={
                 "asset_cfg": SceneEntityCfg("wheelleg", body_names=("base_link",)),
-                "operation": "add",
-                "ranges": (-1.0, 3.0),
+                # Density scales by exp(2 * alpha); preserve positive mass/inertia.
+                "alpha_range": (0.5 * math.log(0.8), 0.5 * math.log(1.2)),
             },
         ),
     }
