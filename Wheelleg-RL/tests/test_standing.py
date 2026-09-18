@@ -23,7 +23,8 @@ standing = _load("wheelleg_standing", "src/wheelleg/mdp/standing.py")
 stance = _load("wheelleg_stance", "src/wheelleg/stance.py")
 
 
-def _env(clearances, speeds=None, yaws=None, base_contact=None):
+def _env(clearances, speeds=None, yaws=None, base_contact=None, air=None,
+         wheel_contact=None, command=None):
     """Fake env whose clearance ray hits `clearances` metres below base_link."""
     n = len(clearances)
     root_z = torch.tensor([[0.0, 0.0, float(c)] for c in clearances])
@@ -32,8 +33,13 @@ def _env(clearances, speeds=None, yaws=None, base_contact=None):
     speeds = [0.0] * n if speeds is None else speeds
     yaws = [0.0] * n if yaws is None else yaws
     contact = [0] * n if base_contact is None else base_contact
+    air = [0.0] * n if air is None else air
+    wheel_contact = [[1, 1]] * n if wheel_contact is None else wheel_contact
+    command = [[1.0, 0.0, 0.0]] * n if command is None else command
     return SimpleNamespace(
         num_envs=n,
+        command_manager=SimpleNamespace(
+            get_command=lambda name: torch.tensor([[float(v) for v in c] for c in command])),
         scene={
             "wheelleg": SimpleNamespace(data=SimpleNamespace(
                 root_link_pos_w=root_z,
@@ -44,6 +50,9 @@ def _env(clearances, speeds=None, yaws=None, base_contact=None):
                 data=SimpleNamespace(hit_pos_w=hits, distances=distances)),
             "base_ground_contact": SimpleNamespace(
                 data=SimpleNamespace(found=torch.tensor([[c] for c in contact]))),
+            "feet_ground_contact": SimpleNamespace(data=SimpleNamespace(
+                current_air_time=torch.tensor([[float(a)] for a in air]),
+                found=torch.tensor([[float(v) for v in row] for row in wheel_contact]))),
         },
     )
 
@@ -135,6 +144,89 @@ class PoseTests(unittest.TestCase):
         self.assertAlmostEqual(standing.standing_pose_error(env)[0].item(), 0.0, places=9)
         asset.data.joint_pos = q + 0.2
         self.assertGreater(standing.standing_pose_error(env)[0].item(), 0.0)
+
+
+def _sym_env(hip_l, thigh_l, knee_l, hip_r, thigh_r, knee_r):
+    q = torch.tensor([[hip_l, thigh_l, knee_l, hip_r, thigh_r, knee_r]])
+    return SimpleNamespace(num_envs=1, scene={"wheelleg": SimpleNamespace(
+        data=SimpleNamespace(joint_pos=q),
+        find_joints=lambda names, preserve_order: (list(range(6)), names))})
+
+
+class SymmetryTests(unittest.TestCase):
+    def _mirrored(self):
+        # The hip axes are not mirrored in the model, so a level pair is L = -R.
+        return _sym_env(0.1, 0.85, -1.23, -0.1, 0.85, -1.23)
+
+    def test_mirrored_legs_have_no_error(self):
+        self.assertAlmostEqual(standing.leg_symmetry_error(self._mirrored())[0].item(), 0.0,
+                               places=9)
+
+    def test_same_sign_hips_are_treated_as_a_tilt(self):
+        tilted = _sym_env(0.2, 0.85, -1.23, 0.2, 0.85, -1.23)
+        self.assertGreater(standing.leg_symmetry_error(tilted)[0].item(), 0.0)
+
+    def test_thigh_and_knee_mismatch_is_penalised_more_than_hips(self):
+        knee = _sym_env(0.0, 0.85, -1.23, 0.0, 0.85, -0.93)
+        hip = _sym_env(0.3, 0.85, -1.23, -0.3, 0.85, -1.23)
+        self.assertGreater(standing.leg_symmetry_error(knee)[0].item(),
+                           standing.leg_symmetry_error(hip)[0].item())
+
+    def test_step_mismatch_scales_with_the_difference(self):
+        small = _sym_env(0.0, 0.85, -1.23, 0.0, 0.65, -1.23)
+        large = _sym_env(0.0, 0.85, -1.23, 0.0, 0.35, -1.23)
+        self.assertGreater(standing.leg_symmetry_error(large)[0].item(),
+                           standing.leg_symmetry_error(small)[0].item())
+
+
+class WheelGroundTests(unittest.TestCase):
+    def test_brief_lift_over_a_bump_is_free(self):
+        env = _env([0.14] * 2, air=[0.0, standing.WHEEL_AIR_ALLOWANCE])
+        self.assertEqual(standing.wheel_off_ground(env).tolist(), [0.0, 0.0])
+
+    def test_sustained_lift_saturates(self):
+        full = standing.WHEEL_AIR_ALLOWANCE + standing.WHEEL_AIR_HORIZON
+        env = _env([0.14] * 3, air=[full, 0.4, 0.35])
+        penalty = standing.wheel_off_ground(env)
+        self.assertEqual(penalty[0].item(), 1.0)
+        self.assertGreater(penalty[1].item(), penalty[2].item())
+        self.assertGreater(penalty[2].item(), 0.0)
+
+    def test_air_time_is_the_worst_wheel(self):
+        env = _env([0.14])
+        env.scene["feet_ground_contact"].data.current_air_time = torch.tensor([[0.1, 0.6]])
+        self.assertAlmostEqual(standing.wheel_air_time(env)[0].item(), 0.6, places=6)
+
+    def test_contact_fraction_counts_both_wheels(self):
+        env = _env([0.14] * 3, wheel_contact=[[1, 1], [1, 0], [0, 0]])
+        self.assertEqual(standing.wheel_contact_fraction(env).tolist(), [1.0, 0.5, 0.0])
+
+
+class WheeledStanceLocomotionTests(unittest.TestCase):
+    def test_kneeling_with_wheels_up_earns_nothing(self):
+        """The exact failure seen in play: high reward for kneeling is impossible."""
+        env = _env([0.03], speeds=[0.5], wheel_contact=[[0, 0]], command=[[0.5, 0.0, 0.0]])
+        self.assertEqual(standing.wheeled_stance_locomotion(env)[0].item(), 0.0)
+
+    def test_wheels_down_but_body_low_earns_nothing(self):
+        env = _env([0.12], speeds=[0.5], command=[[0.5, 0.0, 0.0]])
+        self.assertEqual(standing.wheeled_stance_locomotion(env)[0].item(), 0.0)
+
+    def test_standing_still_earns_nothing(self):
+        env = _env([0.145], speeds=[0.0], command=[[0.5, 0.0, 0.0]])
+        self.assertEqual(standing.wheeled_stance_locomotion(env)[0].item(), 0.0)
+
+    def test_no_command_earns_nothing(self):
+        env = _env([0.145], speeds=[0.5], command=[[0.0, 0.0, 0.0]])
+        self.assertEqual(standing.wheeled_stance_locomotion(env)[0].item(), 0.0)
+
+    def test_reward_grows_towards_the_stance_height(self):
+        env = _env([stance.MIN_CLEARANCE, 0.1375, stance.STANDING_CLEARANCE],
+                   speeds=[0.5] * 3, command=[[0.5, 0.0, 0.0]] * 3)
+        reward = standing.wheeled_stance_locomotion(env)
+        self.assertEqual(reward[0].item(), 0.0)
+        self.assertAlmostEqual(reward[1].item(), 0.5, places=6)
+        self.assertAlmostEqual(reward[2].item(), 1.0, places=6)
 
 
 if __name__ == "__main__":

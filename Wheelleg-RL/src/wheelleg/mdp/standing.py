@@ -35,6 +35,16 @@ INVALID_CLEARANCE = -1.0
 LINEAR_SPEED_MOVING = 0.15  # m/s
 YAW_RATE_MOVING = 0.3  # rad/s
 
+# A wheel may leave the ground to roll over a bump or take a deliberate step, so
+# a lift is free up to the allowance; beyond it the penalty ramps to full over
+# the horizon. This is the knob to loosen if rough terrain needs longer lifts.
+WHEEL_AIR_ALLOWANCE = 0.25  # s
+WHEEL_AIR_HORIZON = 0.75  # s
+
+# Thigh and knee mismatch is penalised in full; hip mismatch counts for less so
+# that lateral balance and turning can still use abduction.
+_SYMMETRY_WEIGHTS = (0.5, 1.0, 1.0)  # hip, thigh, knee
+
 _LEG_JOINTS = (
     "left_hip_joint", "left_thigh_joint", "left_knee_joint",
     "right_hip_joint", "right_thigh_joint", "right_knee_joint",
@@ -105,3 +115,81 @@ def base_ground_contact(env):
     """True when base_link touches the terrain: the robot is down, not on its wheels."""
     found = env.scene["base_ground_contact"].data.found
     return (found.reshape(env.num_envs, -1) > 0).any(dim=1)
+
+
+def wheel_air_time(env, sensor_name="feet_ground_contact"):
+    """Longest current air time across the wheels, in seconds."""
+    air = env.scene[sensor_name].data.current_air_time
+    if air is None:
+        raise ValueError(f"sensor {sensor_name!r} must set track_air_time=True")
+    return air.amax(dim=1)
+
+
+def wheel_off_ground(
+    env,
+    sensor_name="feet_ground_contact",
+    allowance=WHEEL_AIR_ALLOWANCE,
+    horizon=WHEEL_AIR_HORIZON,
+):
+    """Penalty in [0, 1] that ramps up while a wheel stays off the ground.
+
+    Zero for a brief lift over a bump; a wheel held up for ``allowance +
+    horizon`` seconds saturates. The robot is a wheeled machine, so a wheel in
+    the air is a lost wheel rather than a step.
+    """
+    excess = torch.clamp(wheel_air_time(env, sensor_name) - allowance, min=0.0)
+    return torch.clamp(excess / horizon, 0.0, 1.0)
+
+
+def wheel_contact_fraction(env, sensor_name="feet_ground_contact"):
+    """Fraction of wheels currently touching the terrain, 0 to 1."""
+    found = env.scene[sensor_name].data.found
+    return (found.reshape(env.num_envs, -1) > 0).float().mean(dim=1)
+
+
+def leg_symmetry_error(env):
+    """How differently the two legs are posed.
+
+    The hip axes are *not* mirrored in the model (both are ``+X``), so a level
+    pair needs ``left_hip == -right_hip``: the difference that tilts the robot is
+    the sum. The thigh and knee axes are both ``+Y``, where rotation does not
+    involve the lateral offset, so equal angles are already mirror-symmetric.
+    """
+    asset = env.scene["wheelleg"]
+    ids, _ = asset.find_joints(_LEG_JOINTS, preserve_order=True)
+    q = asset.data.joint_pos[:, ids]
+    left, right = q[:, :3], q[:, 3:]
+    mismatch = torch.stack(
+        (left[:, 0] + right[:, 0], left[:, 1] - right[:, 1], left[:, 2] - right[:, 2]),
+        dim=1,
+    )
+    weights = mismatch.new_tensor(_SYMMETRY_WEIGHTS)
+    return torch.mean(torch.square(mismatch) * weights, dim=1)
+
+
+def wheeled_stance_locomotion(
+    env,
+    command_name="twist",
+    command_threshold=0.1,
+    min_clearance=MIN_CLEARANCE,
+    target_clearance=STANDING_CLEARANCE,
+    sensor_name="feet_ground_contact",
+):
+    """Reward for travelling in a wheeled standing posture.
+
+    Paid only when a locomotion command is active, the robot is actually
+    travelling, the body is clear of the ground and both wheels are down, and it
+    scales with how close the body is to the working stance height. Kneeling,
+    lifting the wheels and standing still all earn nothing, so it cannot be
+    farmed by refusing to move.
+    """
+    command = env.command_manager.get_command(command_name)
+    commanded = (
+        torch.linalg.norm(command[:, :2], dim=1) + torch.abs(command[:, 2])
+        > command_threshold
+    ).float()
+    clearance = base_clearance(env)
+    span = max(target_clearance - min_clearance, 1e-6)
+    height = torch.clamp((clearance - min_clearance) / span, 0.0, 1.0)
+    height = torch.where(_measurable(clearance), height, torch.zeros_like(height))
+    return commanded * moving_gate(env) * height * wheel_contact_fraction(env, sensor_name)

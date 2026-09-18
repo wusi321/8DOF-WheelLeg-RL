@@ -48,13 +48,45 @@ def _posture_contract(cfg, enforce_standing=True):
                 "yaw_rate": standing.YAW_RATE_MOVING,
             },
         )
+        # A wheeled robot must not travel on its body, and a wheel held in the air
+        # is a lost wheel. Both are penalties, not resets, so a fall is still
+        # allowed to happen; they only make kneeling unprofitable.
         cfg.rewards["base_contact_penalty"] = RewardTermCfg(
-            func=standing.base_ground_contact, weight=-2.0)
+            func=standing.base_ground_contact, weight=-10.0)
+        cfg.rewards["wheel_off_ground"] = RewardTermCfg(
+            func=standing.wheel_off_ground,
+            weight=-10.0,
+            params={
+                "sensor_name": "feet_ground_contact",
+                "allowance": standing.WHEEL_AIR_ALLOWANCE,
+                "horizon": standing.WHEEL_AIR_HORIZON,
+            },
+        )
+        cfg.rewards["wheeled_stance_locomotion"] = RewardTermCfg(
+            func=standing.wheeled_stance_locomotion,
+            weight=3.0,
+            params={
+                "command_name": "twist",
+                "min_clearance": MIN_CLEARANCE,
+                "target_clearance": STANDING_CLEARANCE,
+                "sensor_name": "feet_ground_contact",
+            },
+        )
+        # Keep the two legs posed alike; an asymmetric gait is not a wheeled gait.
+        cfg.rewards["leg_symmetry"] = RewardTermCfg(
+            func=standing.leg_symmetry_error, weight=-10.0)
         cfg.rewards["standing_pose"] = RewardTermCfg(
             func=standing.standing_pose_error, weight=-0.5)
+        # `feet_air_time` rewards a foot for being *in the air* for 0.1-0.5 s,
+        # which is a stepping incentive for legged robots. On a wheeled machine it
+        # pays the policy to lift its wheels off the ground, so it is removed
+        # rather than retuned.
+        cfg.rewards.pop("feet_air_time", None)
 
     cfg.metrics["base_clearance_m"] = MetricsTermCfg(func=standing.base_clearance)
     cfg.metrics["moving_gate"] = MetricsTermCfg(func=standing.moving_gate)
+    cfg.metrics["wheel_air_time_s"] = MetricsTermCfg(func=standing.wheel_air_time)
+    cfg.metrics["wheel_contact_fraction"] = MetricsTermCfg(func=standing.wheel_contact_fraction)
     return cfg
 
 

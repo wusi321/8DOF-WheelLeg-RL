@@ -97,9 +97,23 @@ class EnvironmentConfigTests(unittest.TestCase):
     def test_locomotion_tasks_enforce_the_standing_contract(self):
         source = (root / "src/wheelleg/config/env_cfgs.py").read_text(encoding="utf-8")
         for term in ("standing.low_posture_locomotion", "standing.standing_height_error",
-                     "standing.base_ground_contact", "standing.moving_gate"):
+                     "standing.base_ground_contact", "standing.moving_gate",
+                     "standing.wheel_off_ground", "standing.wheeled_stance_locomotion",
+                     "standing.leg_symmetry_error"):
             self.assertIn(term, source)
         self.assertIn("MIN_CLEARANCE", source)
+
+    def test_stepping_incentive_is_removed(self):
+        """feet_air_time pays a foot to be in the air; on wheels that is backwards."""
+        source = (root / "src/wheelleg/config/env_cfgs.py").read_text(encoding="utf-8")
+        self.assertIn('cfg.rewards.pop("feet_air_time", None)', source)
+
+    def test_kneeling_penalties_are_stronger_than_tracking(self):
+        """Kneeling pays nothing and costs several times the tracking reward."""
+        source = (root / "src/wheelleg/config/env_cfgs.py").read_text(encoding="utf-8")
+        # base contact -10/s and wheel-off-ground -10/s are both individual terms
+        # far above the ~1.4/s to ~1.7/s the velocity tracking terms pay.
+        self.assertIn("weight=-10.0", source)
 
     def test_moving_low_is_penalised_but_not_terminated(self):
         """The whole point: posture is a reward signal, never a reset."""
