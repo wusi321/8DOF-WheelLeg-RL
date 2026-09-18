@@ -10,5 +10,4 @@ def _runner(name: str, iterations: int) -> RslRlOnPolicyRunnerCfg:
 
 def flat_ppo_runner_cfg(): return _runner("wheelleg_flat", 6000)
 def rough_ppo_runner_cfg(): return _runner("wheelleg_rough", 12000)
-def crawl_ppo_runner_cfg(): return _runner("wheelleg_recovery", 8000)
 def recovery_ppo_runner_cfg(): return _runner("wheelleg_recovery", 8000)

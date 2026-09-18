@@ -9,7 +9,6 @@ description = "8DOF wheel-leg robot reinforcement learning with mjlab"
 requires-python = ">=3.10"
 dependencies = [
     "mjlab[cu128]>=1.0.0",
-    "pynput>=1.8.2",
 ]
 
 [project.optional-dependencies]

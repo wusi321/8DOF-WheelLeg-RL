@@ -729,34 +729,17 @@ def leg_symmetry(
     env: ManagerBasedRlEnv,
     asset_cfg: SceneEntityCfg | None = None,
 ) -> torch.Tensor:
-    """Penalize asymmetry between left and right legs (pitch and knee joints) robustly."""
+    """Penalize left/right differences for the 8DOF sagittal joints."""
     asset: Entity = env.scene["wheelleg"]
-    joint_names = asset.data.joint_names
-    
-    def find_idx(side, jtype):
-        for i, name in enumerate(joint_names):
-            name_lower = name.lower()
-            if side in name_lower and jtype in name_lower:
-                return i
-        # Fallback if not found to avoid crash, though it should find it
-        return 0
-        
-    fl_p = find_idx("fl_", "pitch")
-    fr_p = find_idx("fr_", "pitch")
-    rl_p = find_idx("rl_", "pitch")
-    rr_p = find_idx("rr_", "pitch")
-    
-    fl_k = find_idx("fl_", "knee")
-    fr_k = find_idx("fr_", "knee")
-    rl_k = find_idx("rl_", "knee")
-    rr_k = find_idx("rr_", "knee")
-    
+    ids = {name: index for index, name in enumerate(asset.data.joint_names)}
+    required = ("left_thigh_joint", "right_thigh_joint", "left_knee_joint", "right_knee_joint")
+    if not all(name in ids for name in required):
+        return torch.zeros(env.num_envs, device=asset.data.joint_pos.device)
     q = asset.data.joint_pos
-    cost = torch.square(q[:, fl_p] - q[:, fr_p]) + \
-           torch.square(q[:, rl_p] - q[:, rr_p]) + \
-           torch.square(q[:, fl_k] - q[:, fr_k]) + \
-           torch.square(q[:, rl_k] - q[:, rr_k])
-    return cost
+    return (
+        torch.square(q[:, ids["left_thigh_joint"]] - q[:, ids["right_thigh_joint"]])
+        + torch.square(q[:, ids["left_knee_joint"]] - q[:, ids["right_knee_joint"]])
+    )
 
 def feet_contact_without_cmd(env, command_name: str, sensor_name: str) -> torch.Tensor:
     from mjlab.sensor import ContactSensor

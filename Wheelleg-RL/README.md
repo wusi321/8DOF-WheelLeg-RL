@@ -1,164 +1,211 @@
-# rc_mjlab
+# Wheelleg-RL：8DOF 双轮腿强化学习
 
-基于 [mjlab](https://github.com/mujocolab/mjlab) 的 16DOF 串联轮足机器人强化学习、MuJoCo 验证与策略部署工程。
+本目录是 8DOF 双轮腿机器人的独立训练工程，基于本地可编辑的 **MJLab + MuJoCo Warp + PPO**。这里只维护当前 8DOF 项目；16DOF 四足参考代码和 MicroDuck 参考代码位于仓库外部参考目录，不是本项目运行依赖。
 
-## 版本定位
-
-当前目录是多个里程碑累积后的工作树，不应整体写成“对应 `v0.8.1`”：
-
-| Tag | 本目录中的主要变化 |
-| --- | --- |
-| `v0.4.0` | 第一份新 MJCF 与新 mjlab 训练基线（`uni_mjlab(1)`） |
-| `v0.5.0` | 随机化增强训练版本（`uni_mjlab_new`） |
-| `v0.6.0` | `best` 比赛训练架构：分轴速度奖励、自适应指令课程和障碍释放课程 |
-| `v0.7.0` | 补充后期 `mujoco_sim` 姿态、IK、动力学和 MPC 工具 |
-| `v0.8.0` | 补充后期 Sim2Sim、路线检查和比赛 Rough 策略 `model_6800.onnx` |
-| `v0.8.1` | 补充导航打点、路线迭代与抽样 PCD 工具 |
-
-后续 ROS 2 真机版本没有把本目录重新定义为新的训练版本。要查看某个阶段的真实代码，请切换对应 Tag；当前训练主体以 `v0.6.0` 的 `best` 架构为基础，工具链累计到 `v0.8.1`。
-
-## 目录说明
+## 1. 当前工程内容
 
 ```text
-rc_mjlab/
-├─ src/robot/           # Robot-Flat/Rough/Crawl 任务、PPO 配置和本地 RSL-RL/HIM 代码
-├─ mjcf/                # 机器人、场景与网格资源
-├─ mjlab/               # 固定基准并带本地补丁的 mjlab 源码
-├─ mujoco_sim/          # 姿态、IK、动力学、MPC 与 GUI 工具
-├─ sim2sim/             # ONNX/PT 回放、比赛场景、IK 与路线检查
-├─ tools/nav_tools/     # PCD、地图、航点和路线编辑工具
-├─ model_rough.pt       # 早期 Rough 参考 checkpoint
-├─ model_6800.onnx      # 比赛最终部署使用的 Rough 策略
-├─ pyproject.toml       # Python 包和依赖声明
-├─ uv.lock              # 历史环境的精确锁文件
-└─ DEPENDENCIES.md      # 上游基准、本地补丁和可选依赖说明
+Wheelleg-RL/
+├─ src/wheelleg/              # 8DOF 任务、机器人配置、奖励、课程
+├─ mjcf/8dof_wheelleg.xml     # 由 8DOF URDF 转换的 MuJoCo 模型
+├─ mjcf/meshes/               # 8DOF 左右腿和轮子网格
+├─ mjlab/                     # 固定版本的本地 MJLab 依赖
+├─ scripts/                   # 安装、转换、训练脚本
+├─ configs/training.yaml      # 训练课程和 W&B 选项
+├─ tests/                     # 模型契约测试
+├─ pyproject.toml
+└─ uv.lock
 ```
 
-`model_6800.onnx` 是最终部署工件，不等于训练代码版本号。训练过程中存在基模、继续训练和 checkpoint 筛选，仅凭该 ONNX 不能恢复完整训练日志。
+当前注册任务只有：
 
-## 已注册任务
+| 任务 | 用途 |
+|---|---|
+| `Wheelleg-Flat-v0` | 平地站立、平衡、前后/横向移动、原地旋转 |
+| `Wheelleg-Rough-v0` | 斜坡、随机粗糙地形、矮墙和低矮楼梯 |
+| `Wheelleg-Recovery-v0` | 摔倒恢复、站起和恢复动作训练 |
 
-| Task ID | 用途 | 默认训练时长 |
-| --- | --- | --- |
-| `Robot-Flat-v0` | 平地基础运动 | 20 s/episode |
-| `Robot-Rough-v0` | 粗糙地形、台阶、随机网格、高墙和坡面 | 20 s/episode |
-| `Robot-Crawl-v0` | 低杆、低姿态和匍匐任务 | 30 s/episode |
+机器人关节为 8 个：`left_hip_joint`、`left_thigh_joint`、`left_knee_joint`、`left_wheel_joint`、`right_hip_joint`、`right_thigh_joint`、`right_knee_joint`、`right_wheel_joint`。标准站立角度来自 `robot_description/标准站立.txt`：髋 `0 rad`、大腿 `1.02 rad`、膝 `-1.57 rad`、轮 `0 rad`。
 
-任务入口由 [`src/robot/__init__.py`](src/robot/__init__.py) 注册；环境真值见 [`src/robot/config/env_cfgs.py`](src/robot/config/env_cfgs.py)，PPO 真值见 [`src/robot/config/rl_cfg.py`](src/robot/config/rl_cfg.py)。
+## 2. 服务器安装
 
-## 当前控制与模型参数
-
-以下参数来自当前工作树源码，不代表所有历史 Tag：
-
-| 项目 | 当前值 |
-| --- | --- |
-| MuJoCo 物理步长 | `0.005 s`（200 Hz） |
-| 控制降采样 | `decimation = 4` |
-| 策略周期 | `0.020 s`（50 Hz） |
-| 默认并行环境 | 2048 |
-| 腿部执行器 | 位置控制，`Kp=50.0`、`Kd=1.5`、力矩上限 `17 Nm` |
-| 轮部执行器 | 速度控制，`Kd=1.0`、力矩上限 `17 Nm` |
-| 关节速度参考常量 | `13 rad/s`；当前 Builtin actuator 构造未显式传入该常量 |
-| 默认站姿 | hip pitch `0.550`、knee `-1.125`、机身高度 `0.42 m` |
-| 外展关节动作缩放 | `0.125 rad` |
-| 其余腿关节动作缩放 | `0.25 rad` |
-| 轮速动作缩放 | `5.0 rad/s` |
-| 动作延迟 | 每个环境随机 `0～2` 个控制步 |
-| 低通截止频率 | 腿 `5 Hz`、轮 `15 Hz` |
-
-README 原先写的 `0.002 s × decimation 10`、4096 环境、`Kp=40/Kd=1` 和轮部 `Kd=0.5` 均不对应当前代码，已删除。
-
-## 观测与动作契约
-
-Actor 单步观测为 53 维：
-
-| 观测项 | 维度 |
-| --- | ---: |
-| 基座角速度 | 3 |
-| 投影重力 | 3 |
-| 速度/航向指令 | 3 |
-| 12 个腿关节相对位置 | 12 |
-| 12 个腿关节速度 | 12 |
-| 4 个轮关节速度 | 4 |
-| 上一步 16 维动作 | 16 |
-
-动作共 16 维：12 个腿关节位置目标和 4 个轮关节速度目标。Critic 在 Actor 观测之外增加基座线速度、轮地接触和高度扫描等特权信息。
-
-## Rough 当前配置摘要
-
-`Robot-Rough-v0` 当前混合八类地形：
-
-| 地形 | 比例 | 当前范围摘要 |
-| --- | ---: | --- |
-| 平地 | 15% | 8 m × 8 m |
-| 正向台阶 | 5% | 阶高 `0～0.20 m` |
-| 反向台阶 | 35% | 阶高 `0～0.20 m` |
-| 随机网格 | 27% | 高度 `0～0.20 m` |
-| 随机粗糙面 | 1% | 起伏 `0～0.06 m` |
-| Perlin 噪声 | 1% | 起伏 `0～0.06 m` |
-| 自定义高墙 | 15% | 高度 `0.10～0.35 m` |
-| 金字塔坡面 | 1% | 坡度 `0.052～0.325` |
-
-课程学习从平地、粗糙面、Perlin、坡面和正向台阶开始，随后按训练步数释放随机网格、反向台阶和高墙。同时对 X、Y、Yaw 三个指令轴分别做自适应范围调整。
-
-当前 Rough 奖励使用分轴 `vx/vy/yaw` 跟踪，并启用每步总奖励不低于 0 的截断，而不是旧 README 中的 `track_lin_vel=4.5`、`track_ang_vel=2.0`。它还包含动作变化率、扭矩/功率、腿轮加速度、关节限位、镜像姿态、静止姿态、接触力和非期望碰撞等约束；精确权重以 `rough_env_cfg()` 为准。
-
-## 当前域随机化边界
-
-基础配置实际启用的主要随机项包括：
-
-- 基座质心三轴偏移：各 `[-0.05, 0.05] m`；
-- 碰撞几何摩擦：`[0.3, 1.0]`；
-- 执行器刚度、阻尼缩放：各 `[0.9, 1.1]`，log-uniform；
-- 基座附加质量：`[-1.0, 3.0] kg`；
-- Rough 间歇推扰：每 `5～10 s` 设置一次 X/Y `[-0.5, 0.5] m/s` 速度扰动；
-- 关节动作延迟：`0～2` 个策略步。
-
-旧 README 中列出的 encoder bias、持续外力、关节摩擦和力矩上限随机化并非当前 Rough 配置的完整真实状态，因此不再作为“当前已启用项”陈述。历史随机化差异见 [`../../../01_doc/training_evolution.md`](../../../01_doc/training_evolution.md)。
-
-## 环境安装与基本命令
-
-`setup_ubuntu.sh` 支持国内镜像自动测速和交互选择。默认分别测试 APT 与 PyPI 镜像并选择最快者；也可以手动选择，或通过环境变量固定镜像：
+要求：Ubuntu 22.04、Python 3.10–3.13、NVIDIA 驱动/CUDA、可用 GPU、`uv`。从任意目录执行均可，脚本会自动定位项目根目录：
 
 ```bash
-bash scripts/setup_ubuntu.sh                 # 自动测速
-bash scripts/setup_ubuntu.sh --interactive   # 交互选择 APT/PyPI
+bash /root/Wheelleg/8DOF-WheelLeg-RL/Wheelleg-RL/scripts/setup_ubuntu.sh
+```
+
+安装脚本默认测速并分别选择最快的 APT 与 PyPI 镜像。候选源包括清华、阿里云、中科大、腾讯云、华为云、北外、上海交大和南京大学。
+
+```bash
+# 交互选择
+bash scripts/setup_ubuntu.sh --interactive
+
+# 固定同一个源
 WHEELLEG_MIRROR=ustc bash scripts/setup_ubuntu.sh
-WHEELLEG_APT_MIRROR=aliyun WHEELLEG_PYPI_MIRROR=tuna bash scripts/setup_ubuntu.sh
+
+# APT 与 PyPI 分开指定
+WHEELLEG_APT_MIRROR=aliyun \
+WHEELLEG_PYPI_MIRROR=tuna \
+bash scripts/setup_ubuntu.sh
 ```
 
-候选源包括清华、阿里云、中科大、腾讯云、华为云、北外、上海交大和南京大学。APT 源写入独立的 `wheelleg-mirror.list`，原有源文件保留；Python 依赖通过当前命令的 `UV_INDEX_URL` 使用所选 PyPI 源。
+脚本会将选中的 APT 源写入 `/etc/apt/sources.list.d/wheelleg-mirror.list`，不会删除系统原有源；本次 APT 操作只使用选中的源。Python 依赖通过当前进程的 `UV_INDEX_URL` 使用选中的 PyPI 源。若服务器禁止访问 `astral.sh`，请预先安装 `uv`，再运行脚本。
 
-在本目录执行：
+安装完成后检查：
 
 ```bash
-uv sync
-
-uv run train Robot-Flat-v0
-uv run train Robot-Rough-v0
-uv run train Robot-Crawl-v0
-
-uv run play Robot-Rough-v0
+cd /root/Wheelleg/8DOF-WheelLeg-RL/Wheelleg-RL
+uv run list-envs | grep Wheelleg
+nvidia-smi
 ```
 
-GPU、CUDA、MuJoCo development wheel 和驱动要求见 [`DEPENDENCIES.md`](DEPENDENCIES.md)。恢复训练时需要明确 checkpoint/run 来源，不建议仅凭 README 猜测跨实验热启动参数。
+## 3. 模型转换
 
-## Sim2Sim 与导航工具
+输入模型是仓库根目录的 `robot_description/urdf/8DOFROBOT2.urdf`，网格来自 `robot_description/meshes`。重新转换：
 
 ```bash
-uv run --with-requirements sim2sim/requirements.txt python sim2sim/nav_sim2sim.py
-
-uv run --with-requirements tools/nav_tools/requirements.txt python tools/nav_tools/nav_map_viewer.py
+bash scripts/convert_model.sh
 ```
 
-- 后期 Sim2Sim 入口和策略边界：[`sim2sim/README.md`](sim2sim/README.md)
-- 导航打点与路线数据：[`tools/nav_tools/README.md`](tools/nav_tools/README.md)
-- 训练版本演进：[`../../../01_doc/training_evolution.md`](../../../01_doc/training_evolution.md)
-- 全项目版本历史：[`../../../01_doc/version_history.md`](../../../01_doc/version_history.md)
+转换器会修剪 SolidWorks 导出关节名的首尾空格，生成 `mjcf/8dof_wheelleg.xml`。转换后不要手动改关节顺序；训练配置依赖这些标准名称。
 
-## 复现边界
+## 4. 训练
 
-- `uv.lock` 保存依赖解析结果，但仍需要匹配的 NVIDIA 驱动和 CUDA 环境。
-- TensorRT engine 属于真机部署环境，本目录以训练代码、PT/ONNX 和仿真验证为主。
-- 比赛最终真机工程位于 [`../../real/sim2real_ros2_v3`](../../real/sim2real_ros2_v3)。
-- 参数若与本文冲突，以当前 Tag 中的配置源码为准；不同 Tag 之间不要直接混用奖励权重、站姿和模型。
+第一次必须先做小规模 smoke test：
+
+```bash
+NUM_ENVS=64 ITERS=5 bash scripts/train.sh flat
+```
+
+确认能正常启动后再训练：
+
+```bash
+NUM_ENVS=2048 ITERS=6000 bash scripts/train.sh flat
+NUM_ENVS=2048 ITERS=12000 bash scripts/train.sh rough
+NUM_ENVS=2048 ITERS=8000 bash scripts/train.sh recovery
+```
+
+也可以直接使用 MJLab CLI：
+
+```bash
+uv run train Wheelleg-Flat-v0 --env.scene.num-envs 2048 --agent.max_iterations 6000
+```
+
+训练日志默认位于 `logs/rsl_rl/<experiment_name>/`。不要在没有 GPU、CUDA 或正确 MJLab 环境的本地解释器中直接运行 `python`；本项目命令统一使用 `uv run`。
+
+## 5. W&B 登录与记录
+
+W&B 是可选但推荐的训练监控工具。服务器首次使用前：
+
+```bash
+uv run wandb login
+# 或者
+export WANDB_API_KEY="你的_W&B_API_KEY"
+```
+
+非交互服务器建议使用环境变量：
+
+```bash
+export WANDB_PROJECT=wheelleg-rl
+export WANDB_ENTITY=你的账号或团队名
+```
+
+如果暂时不需要上传：
+
+```bash
+export WANDB_MODE=disabled
+```
+
+提示：W&B 登录成功不代表训练一定成功；仍需观察本地日志、GPU 利用率、奖励、episode length、NaN 和地形成功率。不要把 API key 写入 Git、README 或 shell 脚本。
+
+## 6. Play 回放
+
+当前支持 MJLab 的本地 checkpoint 和 W&B checkpoint 回放。先列出训练产物：
+
+```bash
+find logs/rsl_rl -name 'model_*.pt' -type f | sort
+```
+
+加载本地 checkpoint：
+
+```bash
+uv run play Wheelleg-Flat-v0 \
+  --checkpoint-file logs/rsl_rl/wheelleg_flat/<run_name>/model_5000.pt
+```
+
+粗糙地形和恢复任务：
+
+```bash
+uv run play Wheelleg-Rough-v0 \
+  --checkpoint-file logs/rsl_rl/wheelleg_rough/<run_name>/model_5000.pt
+
+uv run play Wheelleg-Recovery-v0 \
+  --checkpoint-file logs/rsl_rl/wheelleg_recovery/<run_name>/model_5000.pt
+```
+
+从 W&B 加载最新 checkpoint：
+
+```bash
+uv run play Wheelleg-Flat-v0 \
+  --wandb-run-path <entity>/wheelleg-rl/<run_id>
+```
+
+从 W&B 加载指定 checkpoint：
+
+```bash
+uv run play Wheelleg-Rough-v0 \
+  --wandb-run-path <entity>/wheelleg-rl/<run_id> \
+  --wandb-checkpoint-name model_5000.pt
+```
+
+W&B 回放前必须先登录，并保证 run path、项目名和实体名正确。`--checkpoint-file` 与 `--wandb-run-path` 二选一；如果两个都不给，训练策略回放会报错。
+
+降低回放显存：
+
+```bash
+uv run play Wheelleg-Rough-v0 \
+  --checkpoint-file logs/rsl_rl/wheelleg_rough/<run_name>/model_5000.pt \
+  --num-envs 1
+```
+
+录制视频：
+
+```bash
+uv run play Wheelleg-Flat-v0 \
+  --checkpoint-file logs/rsl_rl/wheelleg_flat/<run_name>/model_5000.pt \
+  --num-envs 1 --video --video-length 500
+```
+
+视频写入 checkpoint 对应实验目录下的 `videos/play/`。没有 checkpoint 时可以用零动作或随机动作检查环境初始化：
+
+```bash
+uv run play Wheelleg-Flat-v0 --agent zero --num-envs 4
+uv run play Wheelleg-Flat-v0 --agent random --num-envs 4
+```
+
+## 7. 常见问题
+
+- **`No pyproject.toml found`**：没有通过脚本定位项目根目录，使用仓库中的最新脚本，或先 `cd Wheelleg-RL`。
+- **`Task not found`**：先运行 `uv run list-envs`，任务名必须是 `Wheelleg-*`，不是旧的 `Robot-*`。
+- **W&B 找不到 run/checkpoint**：检查 `WANDB_API_KEY`、`<entity>/<project>/<run_id>` 和 checkpoint 文件名。
+- **显存不足**：训练减小 `NUM_ENVS`，回放加 `--num-envs 1`。
+- **CUDA 初始化失败**：检查 `nvidia-smi`、驱动版本、CUDA/PyTorch 安装和 `uv run python -c 'import torch; print(torch.cuda.is_available())'`。
+- **模型关节找不到**：重新执行 `bash scripts/convert_model.sh`，检查 MJCF 关节名，不要恢复旧四足 XML。
+- **回放窗口不显示**：使用支持图形界面的 SSH/X11，或启用服务器端虚拟显示；训练本身可无窗口运行。
+- **脚本测速很慢**：使用 `WHEELLEG_MIRROR=ustc` 等环境变量跳过测速；每个候选源最多等待约 6 秒。
+- **修改模型或环境后**：先执行 64 环境、5 iteration smoke test，再启动长训练。
+
+## 8. 检查命令
+
+```bash
+uv run pytest tests/test_model_contract.py
+uv run ruff check src scripts tests
+uv run list-envs
+```
+
+本项目不包含真机驱动、ROS 2 部署和独立 ONNX Sim2Sim 工具；这些功能不属于当前训练工程的稳定接口。
+
+## 参考与致谢
+
+训练设计参考了 [RC WheelLeg](https://github.com/zeitvex/RC_WheelLeg)、[MicroDuck RL](https://github.com/pollen-robotics/microduck_rl) 和 [MJLab](https://github.com/mujocolab/mjlab)。感谢相关作者和开源社区。

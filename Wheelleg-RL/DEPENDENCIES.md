@@ -1,56 +1,49 @@
-# 依赖说明
+# Wheelleg-RL 依赖说明
 
-## Python 环境
+## 必需环境
 
-- Python `>=3.10,<3.14`
-- `uv` 依赖管理
-- MuJoCo `3.8` 系列
+- Ubuntu 22.04（服务器推荐）
+- Python 3.10–3.13
+- NVIDIA 驱动与 CUDA 12.8 兼容环境
+- CUDA GPU（训练使用 MuJoCo Warp）
+- `uv`
 - `mjlab[cu128]`
-- PyTorch CUDA 12.8 环境
+- PyTorch CUDA
 - `pynput`
-- 后期 Sim2Sim 可选依赖：Pygame、ONNX Runtime
-- 导航打点可选依赖：Pygame、Pillow
 
-精确解析结果保存在 `uv.lock`。项目使用本地可编辑的 `mjlab`：
+项目使用本地可编辑 MJLab：
 
 ```toml
 [tool.uv.sources]
 mjlab = { path = "mjlab", editable = true }
 ```
 
-## mjlab 来源
+精确依赖解析保存在 `uv.lock`。不要额外安装导航、ROS 2 或真机驱动依赖；这些内容不属于当前训练与回放工程。
 
-- 上游仓库：`https://github.com/mujocolab/mjlab.git`
-- 基准提交：`40f8d93e31b589dccae78ba6aadfc4b74cd1e3fd`
-- 基准日期：`2026-06-02`
-- 上游许可证：Apache-2.0，许可证文件保留在 `mjlab/LICENSE`
+## 安装
 
-本版本在该基准上保留 1 处本地修改：
-
-1. `mjlab/src/mjlab/envs/mdp/dr/actuator.py`：为分组执行器补充名称到运行时执行器对象的解析，使 PD 增益和力矩限制随机化能够正确作用于轮腿机器人的执行器组。
-
-本次归档保留修改后的完整工作树，但不包含上游 `.git`、本地缓存、生成日志和运行时临时文件。
-
-## 基本入口
-
-在 `05_software/train/rc_mjlab` 下执行：
+推荐使用：
 
 ```bash
-uv sync
-uv run train Robot-Flat-v0
-uv run play Robot-Rough-v0
+bash scripts/setup_ubuntu.sh
 ```
 
-根 `uv.lock` 保留比赛训练环境的历史解析结果。后期 Sim2Sim 新增依赖单独保存在 `sim2sim/requirements.txt`，运行时叠加，避免重新锁定时升级历史 MuJoCo nightly：
+该脚本支持国内 APT/PyPI 镜像测速、交互选择和环境变量固定源，详情见 `README.md`。
+
+## 验证
 
 ```bash
-uv run --with-requirements sim2sim/requirements.txt python sim2sim/nav_sim2sim.py
+uv run python -c 'import torch; print(torch.__version__); print(torch.cuda.is_available())'
+uv run list-envs
+uv run pytest tests/test_model_contract.py
 ```
 
-导航打点工具同样不修改历史锁文件：
+若 `torch.cuda.is_available()` 为 `False`，不要直接启动长时间训练；先检查 `nvidia-smi`、驱动、CUDA 和 uv 解析到的 PyTorch wheel。
 
-```bash
-uv run --with-requirements tools/nav_tools/requirements.txt python tools/nav_tools/nav_map_viewer.py
-```
+## MJLab 来源
 
-GPU、CUDA、MuJoCo development wheel 和驱动版本必须满足 `pyproject.toml` 与 `uv.lock` 的约束。
+本项目保留经过项目配置适配的本地 MJLab 工作树。其许可证位于 `mjlab/LICENSE`。上游项目：<https://github.com/mujocolab/mjlab>。
+
+## 运行边界
+
+当前工程只承诺：8DOF 机器人 MJCF、MJLab 训练任务、PPO checkpoint 回放、W&B 训练监控和基础视频录制。真机控制、ROS 2、独立 ONNX Sim2Sim、导航工具和历史四足模型不属于当前工程接口。

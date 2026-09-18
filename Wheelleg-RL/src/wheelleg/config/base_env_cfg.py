@@ -1,9 +1,7 @@
-"""wheelleg Environment Configurations for RL Locomotion Training.
+"""Manager-based environment configurations for the 8DOF Wheelleg robot.
 
-This module defines the Manager-Based RL Environment Configurations for unitree robots
-equipped with actuated wheels and leg joints. It handles sensors, actuators, command
-generators, observation/critic terms, event randomizations, rewards, and terminations
-for flat ground, rough terrains, and crawling tasks.
+This module defines the shared flat and rough locomotion recipes used by the
+registered Wheelleg tasks. Recovery uses the rough recipe with a shorter episode.
 """
 
 import math
@@ -41,7 +39,7 @@ from mjlab.terrains import (
     HfPerlinNoiseTerrainCfg,
     HfPyramidSlopedTerrainCfg,
 )
-from ..terrains import RCWallTerrainCfg, RCLowBarTerrainCfg
+from ..terrains import RCWallTerrainCfg
 from mjlab.utils.noise import UniformNoiseCfg as Unoise
 from mjlab.viewer import ViewerConfig
 
@@ -70,7 +68,6 @@ from ..mdp.rewards import (
     joint_deviation_l2,
     flat_orientation_l2,
     lin_vel_z_l2,
-    crawl_height_reward,
     terrain_level_bonus,
     action_rate_curriculum_l2,
     variable_posture,
@@ -535,8 +532,8 @@ def rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     cfg.rewards.pop("upright", None)
     cfg.rewards.pop("roll_penalty", None)
 
-    # 棣冨皞 闂勬劕鍩楁穱顖欒瘽鐟欐帗顒撮崠鐚寸礄Pitch Dead-zone閿涘绱伴崗浣筋啅濮濓絽鐖堕悥顒€娼弮鑸垫箒閺堚偓婢?29 鎼达讣绱?.50 rad閿涘娈戞禒鎷岊潡閿涘奔绲炬稉銉ュ竴閹晝缍掔搾鍛扮箖鐠囥儰璇濈憴鎺旀畱閳ユ粌澧犳潪顔藉亾缁岀儤姣氶崘?閸氬海鐐曢垾?
-    # 閸斻劍鈧浇顕崇粙瀣殯閸斿彉绗岄崝銊ょ稊閹晝缍掔悰鏉垮櫤
+    # 妫ｅ啫鐨?闂傚嫭鍔曢崺妤佺┍椤栨瑨鐦介悷娆愬笚椤掓挳宕犻悮瀵哥Pitch Dead-zone闁挎稑顧€缁变即宕楁担绛嬪晠婵繐绲介悥鍫曟偉椤掆偓濞碱垶寮懜鍨畳闁哄牃鍋撳?29 閹艰揪璁ｇ槐?.50 rad闁挎稑顦卞▓鎴炵閹峰矈娼￠柨娑樺缁茬偓绋夐妷銉ョ闁诡垪鏅濈紞鎺旀惥閸涙壆绠栭悹鍥ュ劙鐠囨繄鎲撮幒鏃€鐣遍柍銉︾矊婢х姵娼钘変壕缂佸瞼鍎ゅВ姘跺礃?闁告艾娴烽悙鏇㈠灳?
+    # 闁告柣鍔嶉埀顑挎祰椤曞磭绮欑€ｎ亶娈柛鏂垮綁缁楀矂宕濋妸銈囩▕闁诡垪鏅濈紞鎺旀偘閺夊灝娅?
     cfg.rewards.pop("terrain_level_bonus", None)
     cfg.rewards.pop("action_rate_curriculum", None)
     cfg.rewards["action_rate"].weight = -0.01
@@ -563,7 +560,7 @@ def rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         }
     )
 
-    # 缁夊娅?variable_posture 閸欏﹤鍙炬禍褏鏁撻惃鍕饯濮濄垹顨涢崝閬嶆闂冩唻绱濋幑銏㈡暏閺嬩浇浜ゅ顔炬畱閸嬪繒顬囬幆鈺冪稈
+    # 缂佸顭峰▍?variable_posture 闁告瑥锕ら崣鐐瑜忛弫鎾绘儍閸曨垱楗慨婵勫灩椤ㄦ盯宕濋柆宥嗩仦闂傚啯鍞荤槐婵嬪箲閵忋垺鏆忛柡瀣╂祰娴溿倕顕ラ鐐暠闁稿绻掗‖鍥箚閳哄啰绋?
     cfg.rewards.pop("stand_still", None)
     cfg.rewards["stand_still"] = RewardTermCfg(func=stand_still, weight=-2.0, params={"command_name": "twist", "command_threshold": 0.1})
 
@@ -572,7 +569,7 @@ def rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
 
     cfg.rewards.pop("joint_deviation_l2", None)
 
-    # 闁藉牆顕?ab 閸忓疇濡弬钘夊鏉堝啩寮楅崢澶屾畱閹晝缍掗敍宀勬Щ濮濄垹婀?yaw 閺冩湹璐￠幘鍥悪
+    # 闂佽棄鐗嗛?ab 闁稿繐鐤囨俊顓㈠棘閽樺顫ｉ弶鍫濆暕瀵宕㈡径灞剧暠闁诡垪鏅濈紞鎺楁晬瀹€鍕╂慨婵勫灩濠€?yaw 闁哄啯婀圭拹锟犲箻閸ヮ亜鎮?
     cfg.rewards["joint_pos_penalty_ab"] = RewardTermCfg(
         func=joint_pos_penalty,
         weight=-1.0,
@@ -585,7 +582,7 @@ def rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         }
     )
 
-    # 闁藉牆顕?pitch 閸?knee 閸忓疇濡弬钘夊鏉堝啫顔旈弶鍓ф畱閹晝缍掗敍灞肩箽閻ｆ瑨娉曠搾濠囨绾板秶娈戦幎顒冨悪閼奉亞鏁辨惔?
+    # 闂佽棄鐗嗛?pitch 闁?knee 闁稿繐鐤囨俊顓㈠棘閽樺顫ｉ弶鍫濆暙椤旀棃寮堕崜褎鐣遍柟顖楁櫇缂嶆帡鏁嶇仦鑲╃闁伙絾鐟ㄥ▔鏇犳惥婵犲洦顔囩痪鏉跨Ф濞堟垿骞庨鍐ㄦ偑闁煎浜為弫杈ㄦ償?
     cfg.rewards["joint_pos_penalty_sagittal"] = RewardTermCfg(
         func=joint_pos_penalty,
         weight=-0.3,
@@ -598,7 +595,7 @@ def rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         }
     )
 
-    # 棣冨皞 瀵搫濮忕痪锔芥将閸氬奔鏅舵径鏍х潔閸忓疇濡獮瀹狀攽鐎靛湱袨閿涘本绉烽梽銈堟祮閸氭垶妞傞惃鍕閸氬骸澹€閸掆偓瀵繑鎲滈崝?
+    # 妫ｅ啫鐨?鐎殿喖鎼慨蹇曠棯閿旇姤灏嗛柛姘閺呰埖寰勯弽褏娼旈柛蹇撶枃婵☆參鐛€圭媭鏀介悗闈涙贡琚ㄩ柨娑樻湰缁夌兘姊介妶鍫熺ギ闁告碍鍨跺鍌炴儍閸曨偄顤呴柛姘婢光偓闁告巻鍋撶€殿喖绻戦幉婊堝礉?
     cfg.rewards["abduction_mirror"] = RewardTermCfg(
         func=joint_mirror,
         weight=-0.1,
@@ -620,13 +617,13 @@ def rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     cfg.rewards["base_height_l2"].params["target_height"] = 0.42
     cfg.rewards["base_height_l2"].params["sensor_cfg"] = SceneEntityCfg("height_scanner")
 
-    # 閹垹顦查張楦块煩绾扮増鎸掗幆鈺冪稈娑?1.0閿涘矂鈧壈鎻╅張鍝勬珤娴滄椽鐝幎顒冨悪鐠恒劏绉洪梾婊咁暡閿涘矂妲诲銏″珛閸?
+    # 闁诡厹鍨归ˇ鏌ュ嫉妤﹀潡鐓╃痪鎵閹告帡骞嗛埡鍐▓濞?1.0闁挎稑鐭傞埀顒冨閹烩晠寮甸崫鍕彜濞存粍妞介悵顕€骞庨鍐ㄦ偑閻犳亽鍔忕粔娲⒕濠婂拋鏆￠柨娑樼焸濡茶顫㈤姀鈥崇彌闁?
     cfg.rewards.pop("body_collision", None)
     cfg.rewards["undesired_contacts"] = RewardTermCfg(func=undesired_contacts, weight=-1.0, params={"sensor_name": "body_collision", "threshold": 1.0})
     cfg.rewards["contact_forces"] = RewardTermCfg(func=contact_forces, weight=-1.5e-4, params={"sensor_name": "feet_ground_contact", "threshold": 100.0})
 
-    # 棣冨皞 娑撱儱甯€閹晝缍掗張楦块煩/閼虫悂鍎寸喊鐗堟寬閿涘牓妲诲銏⑩€栭幘鐐虹彯婢ф瑱绱氶敍宀勨偓鑹版彥閺堝搫娅掓禍鍝勵劅娴兼氨鏁ら崜宥堢枂鐟欙箑顣鹃獮鏈靛瘜閸斻劍濮懙鎸庢敘閻栴剛娈戦垾婊喰曠憴澶婂冀鐏忓嫧鈧?
-    # 瑜拌绨崇粔濠氭珟閺堥缚闊╂穱顖欒瘽缁撅附娼敍灞藉帒鐠佸憡婧€閸ｃ劋姹夐幎顒€銇旈悥顒勭彯?    cfg.rewards.pop("flat_orientation", None)
+    # 妫ｅ啫鐨?濞戞挶鍎辩敮鈧柟顖楁櫇缂嶆帡寮垫ウ鍧楃叐/闁艰櫕鎮傞崕瀵稿枈閻楀牊瀵柨娑樼墦濡茶顫㈤姀鈶┾偓鏍箻閻愯櫣褰褎鐟辩槐姘舵晬瀹€鍕ㄥ亾閼圭増褰ラ柡鍫濇惈濞呮帗绂嶉崫鍕靛妳濞村吋姘ㄩ弫銈夊礈瀹ュ牏鏋傞悷娆欑畱椤ｉ箖鐛張闈涚槣闁告柣鍔嶆慨顕€鎳欓幐搴㈡晿闁绘牬鍓涘▓鎴﹀灳濠婂柊鏇犳喆婢跺﹤鍐€閻忓繐瀚ч埀?
+    # 鐟滄媽顕х花宕囩矓婵犳碍鐝熼柡鍫ョ細闂娾晜绌遍娆掔樈缂佹拝闄勫顐︽晬鐏炶棄甯掗悹浣告啞濠р偓闁革絻鍔嬪Ч澶愬箮椤掆偓閵囨棃鎮ラ鍕蒋?    cfg.rewards.pop("flat_orientation", None)
 
     # Remove non-applicable rewards
     for key in ("wheel_roll_tracking", "wheel_contact_bonus", "body_ang_vel", "terrain_level_bonus", "action_rate_curriculum"):
@@ -635,7 +632,7 @@ def rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     cfg.episode_length_s = 20.0
     cfg.sim = SimulationCfg(contact_sensor_maxmatch=128, mujoco=MujocoCfg(timestep=0.005, impratio=100, cone="elliptic", ccd_iterations=80))
 
-    # 缁夊娅?orientation 缂佸牊顒涢敍灞藉帒鐠佸憡婧€閸ｃ劋姹夌紙璇测偓鎺嶄簰鐎涳缚绡勯崶鐐差槻
+    # 缂佸顭峰▍?orientation 缂備礁鐗婇娑㈡晬鐏炶棄甯掗悹浣告啞濠р偓闁革絻鍔嬪Ч澶岀礄鐠囨祴鍋撻幒宥勭鞍閻庢冻缂氱弧鍕炊閻愬樊妲?
     cfg.seed = 42
     if cfg.scene.terrain is not None:
         cfg.scene.terrain.num_envs = 2048
@@ -713,139 +710,6 @@ def rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             ),
         }
     )
-
-    if play:
-        cfg.episode_length_s = int(1e9)
-        cfg.observations["actor"].enable_corruption = False
-        cfg.events.pop("push_robot", None)
-        cfg.curriculum = {}
-        if cfg.scene.terrain is not None and cfg.scene.terrain.terrain_generator is not None:
-            cfg.scene.terrain.terrain_generator.curriculum = False
-            cfg.scene.terrain.terrain_generator.num_cols = 5
-            cfg.scene.terrain.terrain_generator.num_rows = 5
-            cfg.scene.terrain.terrain_generator.border_width = 10.0
-
-    return cfg
-
-
-def crawl_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
-    """Crawling and ducking configuration for climbing obstacles under low clearing heights."""
-    enable_only_positive_rewards()
-
-    cfg = _make_base_env_cfg()
-    cfg.scene.entities = {"wheelleg": get_robot_cfg()}
-
-    # ------------------
-    # Terrain Definition
-    # ------------------
-    cfg.scene.terrain = TerrainEntityCfg(
-        terrain_type="generator",
-        terrain_generator=TerrainGeneratorCfg(
-            size=(8.0, 8.0), border_width=20.0, num_rows=10, num_cols=20, curriculum=True,
-            sub_terrains={
-                "flat": BoxFlatTerrainCfg(proportion=0.25),
-                "rc_low_bar": RCLowBarTerrainCfg(proportion=0.35, clearance_range=(0.24, 0.32)),
-                "random_grid": BoxRandomGridTerrainCfg(proportion=0.20, grid_width=0.45, grid_height_range=(0.0, 0.05)),
-                "perlin_noise": HfPerlinNoiseTerrainCfg(proportion=0.20, height_range=(0.0, 0.05), octaves=2, persistence=0.4, lacunarity=2.0, horizontal_scale=0.20, resolution=0.20, border_width=0.50, base_thickness_ratio=100.0),
-            },
-        ),
-        max_init_terrain_level=0,
-    )
-
-    # Disable command vel curriculum and setup base command ranges
-    cfg.curriculum.pop("command_vel", None)
-    cfg.curriculum["terrain_levels"] = CurriculumTermCfg(func=velocity_mdp.terrain_levels_vel, params={"command_name": "twist"})
-
-    cfg.commands["twist"].heading_command = False
-    cfg.commands["twist"].rel_heading_envs = 0.0
-    cfg.commands["twist"].ranges.heading = None
-    cfg.commands["twist"].rel_standing_envs = 0.05   # 閸戝繐鐨棃娆愵剾濮ｆ柧绶ラ敍鍫濆閸栨劙娓堕幐浣虹敾鏉╂劕濮╅敓?    cfg.commands["twist"].rel_forward_envs = 0.40    # 40% 缁绢垰澧犻崥鎴礄娴ｅ孩娼岄崷鏉胯埌閸忋劍妲搁惄瀵糕敍閿?
-    # ------------------
-    # Events & Reset
-    # ------------------
-    cfg.events["joint_friction"] = EventTermCfg(func=envs_dr.joint_friction, mode="startup", params={"asset_cfg": SceneEntityCfg("wheelleg"), "ranges": (0.7, 1.3), "operation": "scale"})
-    cfg.events["reset_joints"] = EventTermCfg(func=envs_mdp.reset_joints_by_offset, mode="reset", params={"position_range": (0.0, 0.1), "velocity_range": (0.0, 0.0), "asset_cfg": SceneEntityCfg("wheelleg", joint_names=(".*",))})
-    
-    cfg.events["reset_base"] = EventTermCfg(
-        func=envs_mdp.reset_root_state_uniform, mode="reset",
-        params={
-            "pose_range": {"z": (0.00, 0.04), "yaw": (-math.pi, math.pi)},
-            "velocity_range": {"x": (-0.1, 0.1), "y": (-0.05, 0.05), "yaw": (-0.1, 0.1)},
-            "asset_cfg": SceneEntityCfg("wheelleg"),
-        },
-    )
-    cfg.events["push_robot"] = EventTermCfg(
-        func=envs_mdp.push_by_setting_velocity, mode="interval",
-        interval_range_s=(5.0, 10.0),
-        params={"velocity_range": {"x": (-0.3, 0.3), "y": (-0.3, 0.3)}, "asset_cfg": SceneEntityCfg("wheelleg")},
-    )
-
-    # ------------------
-    # Rewards Integration
-    # ------------------
-    cfg.rewards["track_lin_vel"].weight = 3.0
-    cfg.rewards["track_lin_vel"].params["std"] = 0.5
-    cfg.rewards["track_ang_vel"].weight = 1.5
-    cfg.rewards["track_ang_vel"].params["std"] = 0.5
-    
-    cfg.rewards["lin_vel_z"] = RewardTermCfg(func=lin_vel_z_l2, weight=-1.0)
-    cfg.rewards["ang_vel_xy"] = RewardTermCfg(func=velocity_mdp.body_angular_velocity_penalty, weight=-0.05, params={"asset_cfg": SceneEntityCfg("wheelleg", body_names=("base_link",))})
-    
-    cfg.rewards["upright"].weight = 1.0
-    cfg.rewards["upright"].params["std"] = 0.5
-    cfg.rewards["action_rate"].weight = -0.001
-    cfg.rewards["joint_torques"].weight = -1e-4
-    cfg.rewards["joint_acc"].weight = 0.0
-    cfg.rewards["joint_pos_limits"].weight = -1.0
-    cfg.rewards["leg_motion_penalty"].weight = -5.0
-    cfg.rewards["is_terminated"].weight = -50.0
-
-    # Under-crawling height reward: maximum bonus when body stays under 0.22m
-    cfg.rewards.pop("base_height_l2", None)
-    cfg.rewards["crawl_height_reward"] = RewardTermCfg(
-        func=crawl_height_reward,
-        weight=1.5,
-        params={"target_height": 0.22, "std": 0.05}
-    )
-
-    cfg.rewards.pop("stand_still", None)
-    
-    cfg.rewards.pop("hip_deviation", None)
-    cfg.rewards["leg_joint_deviation"] = RewardTermCfg(
-        func=joint_deviation_l2,
-        weight=-15.0,
-        params={"asset_cfg": SceneEntityCfg("wheelleg", joint_names=("(left|right)_hip_joint", "(left|right)_thigh_joint", "(left|right)_knee_joint"))},
-    )
-    
-    # 棣冨皞 瀵搫濮忓鏇炲弳鏉烆喖鐡欏姘З鐠虹喕閲滄總鏍уС閿涘苯绱╃€靛吋婧€閸ｃ劋姹夌€瑰苯鍙忔笟婵嬫浆鏉烆喖鐡欓惃鍕劀閸氭垶绮撮崝銊ㄧ箻鐞涘苯閽╅崷?娴ｅ海鐓径鍕畱閹恒劏绻?
-    cfg.rewards["wheel_roll_tracking"] = RewardTermCfg(
-        func=wheel_roll_tracking, 
-        weight=4.0, 
-        params={
-            "command_name": "twist", 
-            "wheel_radius": 0.10, 
-            "wheel_track": 0.32, 
-            "std": 3.0, 
-            "asset_cfg": SceneEntityCfg("wheelleg", joint_names=("(left|right)_wheel_joint",))
-        }
-    )
-
-    if "body_collision" in cfg.rewards:
-        cfg.rewards["body_collision"].weight = -0.1
-
-    cfg.rewards["flat_orientation"] = RewardTermCfg(func=flat_orientation_l2, weight=-1.0)
-
-    for key in ("wheel_roll_tracking", "feet_air_time", "wheel_contact_bonus", "body_ang_vel"):
-        cfg.rewards.pop(key, None)
-
-    cfg.episode_length_s = 30.0
-    cfg.sim = SimulationCfg(contact_sensor_maxmatch=128, mujoco=MujocoCfg(timestep=0.005, impratio=100, cone="elliptic", ccd_iterations=80))
-
-    # Loosen orientation bad threshold to 80 degrees for steep crawling tilts
-    cfg.terminations["bad_orientation"].params["limit_angle"] = math.radians(80.0)
-    
-    # Remove base ground contact termination to facilitate crawl under bars
-    cfg.terminations.pop("base_ground_contact", None)
 
     if play:
         cfg.episode_length_s = int(1e9)
