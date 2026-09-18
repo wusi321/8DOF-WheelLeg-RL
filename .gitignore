@@ -1,0 +1,17 @@
+# Python bytecode and caches
+__pycache__/
+*.py[cod]
+
+# Virtual environments and local build output
+.venv/
+build/
+dist/
+*.egg-info/
+
+# Training output
+Wheelleg-RL/logs/
+Wheelleg-RL/wandb/
+
+# Editor and OS noise
+.DS_Store
+Thumbs.db

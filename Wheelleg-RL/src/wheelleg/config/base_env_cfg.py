@@ -44,9 +44,9 @@ from mjlab.utils.noise import UniformNoiseCfg as Unoise
 from mjlab.viewer import ViewerConfig
 
 from ..robot_cfg import get_robot_cfg
+from ..stance import NOMINAL_STANCE, STANDING_CLEARANCE, WHEEL_RADIUS, WHEEL_TRACK
 from ..mdp.lowpass_actions import JointPositionDelayedLowPassActionCfg, JointVelocityDelayedLowPassActionCfg
 from ..mdp.disturbances import apply_continuous_disturbance
-from ..mdp.only_positive_rewards import enable_only_positive_rewards
 from ..mdp.rewards import (
     track_linear_velocity,
     track_linear_velocity_l1,
@@ -273,14 +273,17 @@ def _make_base_env_cfg() -> ManagerBasedRlEnvCfg:
         "reset_base": EventTermCfg(
             func=envs_mdp.reset_root_state_uniform, mode="reset",
             params={
-                "pose_range": {"x": (-0.5, 0.5), "y": (-0.5, 0.5), "yaw": (-math.pi, math.pi)},
+                # z is added to the spawned stance height, so it must stay small
+                # and never negative: a negative offset buries the wheels in the
+                # ground and the resulting penetration impulse dominates the step.
+                "pose_range": {"x": (-0.5, 0.5), "y": (-0.5, 0.5), "z": (0.0, 0.005), "yaw": (-math.pi, math.pi)},
                 "velocity_range": {
-                    "x": (-0.5, 0.5),
-                    "y": (-0.5, 0.5),
-                    "z": (-0.5, 0.5),
-                    "roll": (-0.5, 0.5),
-                    "pitch": (-0.5, 0.5),
-                    "yaw": (-0.5, 0.5),
+                    "x": (-0.15, 0.15),
+                    "y": (-0.15, 0.15),
+                    "z": (-0.05, 0.05),
+                    "roll": (-0.2, 0.2),
+                    "pitch": (-0.2, 0.2),
+                    "yaw": (-0.2, 0.2),
                 },
                 "asset_cfg": SceneEntityCfg("wheelleg"),
             },
@@ -324,14 +327,14 @@ def _make_base_env_cfg() -> ManagerBasedRlEnvCfg:
         "track_lin_vel": RewardTermCfg(func=track_linear_velocity, weight=2.5, params={"std": 0.5, "command_name": "twist"}),
         "track_ang_vel": RewardTermCfg(func=track_angular_velocity, weight=2.5, params={"std": 0.5, "command_name": "twist"}),
         "upright": RewardTermCfg(func=velocity_mdp.upright, weight=1.0, params={"std": 0.5, "asset_cfg": SceneEntityCfg("wheelleg", body_names=("base_link",))}),
-        "base_height_l2": RewardTermCfg(func=base_height_l2, weight=-2.0, params={"target_height": 0.36}),
+        "base_height_l2": RewardTermCfg(func=base_height_l2, weight=-4.0, params={"target_height": STANDING_CLEARANCE}),
         "body_ang_vel": RewardTermCfg(func=velocity_mdp.body_angular_velocity_penalty, weight=-0.1, params={"asset_cfg": SceneEntityCfg("wheelleg", body_names=("base_link",))}),
         "is_terminated": RewardTermCfg(func=envs_mdp.is_terminated, weight=-200.0),
         "joint_torques": RewardTermCfg(func=envs_mdp.joint_torques_l2, weight=-2.0e-4, params={"asset_cfg": SceneEntityCfg("wheelleg")}),
         "joint_acc": RewardTermCfg(func=envs_mdp.joint_acc_l2, weight=-2.5e-7, params={"asset_cfg": SceneEntityCfg("wheelleg")}),
         "action_rate": RewardTermCfg(func=envs_mdp.action_rate_l2, weight=-0.01),
         "joint_pos_limits": RewardTermCfg(func=envs_mdp.joint_pos_limits, weight=-10.0, params={"asset_cfg": SceneEntityCfg("wheelleg")}),
-        "wheel_roll_tracking": RewardTermCfg(func=wheel_roll_tracking, weight=2.0, params={"command_name": "twist", "wheel_radius": 0.10, "wheel_track": 0.32, "std": 3.0, "asset_cfg": SceneEntityCfg("wheelleg", joint_names=("(left|right)_wheel_joint",))}),
+        "wheel_roll_tracking": RewardTermCfg(func=wheel_roll_tracking, weight=2.0, params={"command_name": "twist", "wheel_radius": WHEEL_RADIUS, "wheel_track": WHEEL_TRACK, "std": 3.0, "asset_cfg": SceneEntityCfg("wheelleg", joint_names=("(left|right)_wheel_joint",))}),
         "wheel_contact_bonus": RewardTermCfg(func=contact_fraction_reward, weight=0.5, params={"sensor_name": "feet_ground_contact"}),
         "feet_air_time": RewardTermCfg(func=velocity_mdp.feet_air_time, weight=0.5, params={"sensor_name": "feet_ground_contact", "threshold_min": 0.1, "threshold_max": 0.5, "command_name": "twist", "command_threshold": 0.1}),
         "leg_motion_penalty": RewardTermCfg(func=adaptive_leg_motion_penalty, weight=-0.02, params={"command_name": "twist", "sensor_name": "feet_ground_contact", "command_threshold": 0.05, "tilt_relax_start": 0.08, "tilt_relax_end": 0.30, "contact_target": 0.85, "min_penalty_scale": 0.2, "asset_cfg": SceneEntityCfg("wheelleg", joint_names=("(left|right)_hip_joint", "(left|right)_thigh_joint", "(left|right)_knee_joint"))}),
@@ -384,8 +387,6 @@ def flat_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
 
 def rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     """Rough terrains configuration for general wheel-legged navigation."""
-    enable_only_positive_rewards()
-
     cfg = _make_base_env_cfg()
     cfg.scene.entities = {"wheelleg": get_robot_cfg()}
 
