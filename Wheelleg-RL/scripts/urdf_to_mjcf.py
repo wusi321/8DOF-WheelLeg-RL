@@ -93,6 +93,8 @@ def main() -> None:
         attrs = {"name": name, "pos": pos}
         if rpy != "0 0 0": attrs["euler"] = rpy
         body = ET.SubElement(parent, "body", attrs)
+        if name == root_link:
+            ET.SubElement(body, "freejoint", {"name": "floating_base"})
         inert = inertial(link)
         if inert is not None: body.append(inert)
         vis = link.find("visual/geometry/mesh")

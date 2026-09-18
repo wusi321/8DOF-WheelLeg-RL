@@ -6,6 +6,8 @@ from ..robot_cfg import get_robot_cfg
 def _adapt(cfg, play=False):
     cfg.scene.entities = {"wheelleg": get_robot_cfg()}
     cfg.scene.num_envs = 2048
+    # Reserve per-world constraints for floating-base ground contact.
+    cfg.sim.njmax = 512
     if play:
         cfg.episode_length_s = int(1e9)
         cfg.observations["actor"].enable_corruption = False
