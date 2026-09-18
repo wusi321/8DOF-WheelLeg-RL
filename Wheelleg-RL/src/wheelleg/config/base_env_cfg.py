@@ -124,7 +124,7 @@ def _make_base_env_cfg() -> ManagerBasedRlEnvCfg:
         name="feet_ground_contact",
         primary=ContactMatch(
             mode="body",
-            pattern=tuple("left_wheel_link", "right_wheel_link"),
+            pattern=("left_wheel_link", "right_wheel_link"),
             entity="wheelleg",
         ),
         secondary=ContactMatch(mode="body", pattern="terrain"),
