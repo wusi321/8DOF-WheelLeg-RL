@@ -309,19 +309,20 @@ def wheel_roll_tracking(
     asset: Entity = env.scene[asset_cfg.name]
     command = env.command_manager.get_command(command_name)
 
-    wheel_vel = asset.data.joint_vel[:, asset_cfg.joint_ids]
-    # Assumes order: fl, fr, rl, rr. Side signs: fl=1, fr=-1, rl=1, rr=-1
-    side_signs = torch.tensor(
-        [1.0, -1.0, 1.0, -1.0],
-        device=env.device,
-        dtype=wheel_vel.dtype,
-    ).unsqueeze(0)
-
-    lin_vel_x = command[:, 0:1]
-    ang_vel_z = command[:, 2:3]
-    target_wheel_vel = (
-        lin_vel_x + 0.5 * wheel_track * side_signs * ang_vel_z
-    ) / wheel_radius
+    if wheel_radius <= 0 or wheel_track <= 0 or std <= 0:
+        raise ValueError("Wheel radius, track and reward std must be positive")
+    # Explicit name ordering keeps targets aligned even if MJCF joint order changes.
+    wheel_ids, _ = asset.find_joints(
+        ("left_wheel_joint", "right_wheel_joint"), preserve_order=True
+    )
+    if len(wheel_ids) != 2:
+        raise ValueError("Wheelleg requires exactly one left and one right wheel joint")
+    wheel_vel = asset.data.joint_vel[:, wheel_ids]
+    lin_vel_x = command[:, 0]
+    ang_vel_z = command[:, 2]
+    left_target = (lin_vel_x - 0.5 * wheel_track * ang_vel_z) / wheel_radius
+    right_target = (lin_vel_x + 0.5 * wheel_track * ang_vel_z) / wheel_radius
+    target_wheel_vel = torch.stack((left_target, right_target), dim=1)
 
     err = torch.mean(torch.square(wheel_vel - target_wheel_vel), dim=1)
     reward = torch.exp(-err / (std**2))
