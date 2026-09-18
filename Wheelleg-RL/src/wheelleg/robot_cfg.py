@@ -19,8 +19,8 @@ def get_spec() -> mujoco.MjSpec:
 LEG_ACTUATOR_CFG = BuiltinPositionActuatorCfg(target_names_expr=LEG_EXPR, stiffness=35.0, damping=1.0, effort_limit=4.0)
 WHEEL_ACTUATOR_CFG = BuiltinVelocityActuatorCfg(target_names_expr=WHEEL_EXPR, damping=0.5, effort_limit=2.0)
 ARTICULATION_CFG = EntityArticulationInfoCfg(actuators=(LEG_ACTUATOR_CFG, WHEEL_ACTUATOR_CFG), soft_joint_pos_limit_factor=0.95)
-COLLISION_CFG = CollisionCfg(geom_names_expr=(".*",), contype=1, conaffinity=1, condim={".*wheel.*": 6, ".*": 1}, friction={".*wheel.*": (0.8, 0.05, 0.01)})
-INIT_STATE = EntityCfg.InitialStateCfg(pos=(0.0, 0.0, 0.36), joint_pos=INIT_JOINT_POS, joint_vel={".*": 0.0})
+COLLISION_CFG = CollisionCfg(geom_names_expr=(".*_collision",), contype=1, conaffinity=1, condim={".*wheel.*": 6, ".*": 1}, friction={".*wheel.*": (0.8, 0.05, 0.01)})
+INIT_STATE = EntityCfg.InitialStateCfg(pos=(0.0, 0.0, 0.15), joint_pos=INIT_JOINT_POS, joint_vel={".*": 0.0})
 
 def get_robot_cfg() -> EntityCfg:
     return EntityCfg(init_state=INIT_STATE, collisions=(COLLISION_CFG,), spec_fn=get_spec, articulation=ARTICULATION_CFG)

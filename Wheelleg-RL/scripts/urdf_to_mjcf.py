@@ -7,8 +7,8 @@ whitespace from legacy SolidWorks joint names.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import math
-import shutil
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
@@ -21,6 +21,30 @@ def origin(el: ET.Element | None) -> tuple[str, str]:
     if el is None:
         return "0 0 0", "0 0 0"
     return f(el.get("xyz", "0 0 0")), f(el.get("rpy", "0 0 0"))
+
+
+# Both original CAD wheel rims are centered at z=2.546479 mm, not on the
+# URDF's y-axis axle. Only correct these exact, untransformed source meshes;
+# replacement geometry or an explicit URDF mesh pose must remain authoritative.
+WHEEL_MESH_SHA256 = {
+    "left_wheel_link": "ae720743da9d1aebe70258cc0c9f1d02f61b6fb85ef833e1f19c8567b5d6f746",
+    "right_wheel_link": "31586e53750a3dc269b9f0fa34e6b8f33a2436197926e25118392be0cbbea9c9",
+}
+WHEEL_RIM_CENTER_Z = 0.002546478994190693
+
+
+def mesh_pose(name: str, source: ET.Element, mesh_path: Path) -> dict[str, str]:
+    xyz, rpy = origin(source.find("origin"))
+    mesh = source.find("geometry/mesh")
+    scale = [float(v) for v in mesh.get("scale", "1 1 1").split()]
+    if (
+        name in WHEEL_MESH_SHA256
+        and all(float(v) == 0 for v in (xyz + " " + rpy).split())
+        and scale == [1.0, 1.0, 1.0]
+        and hashlib.sha256(mesh_path.read_bytes()).hexdigest() == WHEEL_MESH_SHA256[name]
+    ):
+        xyz = f"0 0 {-WHEEL_RIM_CENTER_Z:.15g}"
+    return {"pos": xyz, "euler": rpy}
 
 
 def _positive_inertia(inertia: ET.Element) -> tuple[float, ...]:
@@ -78,15 +102,26 @@ def main() -> None:
         children.add(child)
     root_link = next(name for name in links if name not in children)
     mj = ET.Element("mujoco", {"model": "8dof_wheelleg"})
-    ET.SubElement(mj, "compiler", {"angle": "radian", "meshdir": "meshes"})
+    ET.SubElement(mj, "compiler", {"angle": "radian", "eulerseq": "XYZ", "meshdir": "meshes"})
     ET.SubElement(mj, "option", {"timestep": "0.005", "integrator": "implicitfast", "gravity": "0 0 -9.81"})
     asset = ET.SubElement(mj, "asset")
-    for name in links:
-        mesh = next(iter(links[name].findall("visual/geometry/mesh")), None)
-        if mesh is not None:
+    mesh_assets = {}
+    for name, link in links.items():
+        for kind in ("visual", "collision"):
+            source = link.find(kind)
+            mesh = link.find(f"{kind}/geometry/mesh")
+            if mesh is None:
+                continue
             file = Path(mesh.get("filename", "").split("/")[-1])
-            if args.mesh_dir.joinpath(file).exists():
-                ET.SubElement(asset, "mesh", {"name": name, "file": file.name})
+            mesh_path = args.mesh_dir / file
+            if not mesh_path.is_file():
+                raise FileNotFoundError(f"Missing {name} {kind} mesh: {mesh_path}")
+            scale = f(mesh.get("scale", "1 1 1"))
+            key = (file.name, scale)
+            if key not in mesh_assets:
+                asset_name = name if kind == "visual" else name + "_collision"
+                ET.SubElement(asset, "mesh", {"name": asset_name, "file": file.name, "scale": scale})
+                mesh_assets[key] = asset_name
     world = ET.SubElement(mj, "worldbody")
     def add_body(parent: ET.Element, name: str, pos: str = "0 0 0", rpy: str = "0 0 0") -> None:
         link = links[name]
@@ -97,12 +132,20 @@ def main() -> None:
             ET.SubElement(body, "freejoint", {"name": "floating_base"})
         inert = inertial(link)
         if inert is not None: body.append(inert)
-        vis = link.find("visual/geometry/mesh")
-        if vis is not None and name in [x.get("name") for x in asset.findall("mesh")]:
-            ET.SubElement(body, "geom", {"name": name+"_visual", "type": "mesh", "mesh": name, "contype": "0", "conaffinity": "0", "group": "1"})
-        col = link.find("collision/geometry/mesh")
-        if col is not None and name in [x.get("name") for x in asset.findall("mesh")]:
-            ET.SubElement(body, "geom", {"name": name+"_collision", "type": "mesh", "mesh": name, "friction": "0.8 0.05 0.01"})
+        for kind in ("visual", "collision"):
+            source = link.find(kind)
+            mesh = link.find(f"{kind}/geometry/mesh")
+            if mesh is None:
+                continue
+            file = Path(mesh.get("filename", "").split("/")[-1])
+            key = (file.name, f(mesh.get("scale", "1 1 1")))
+            attrs = {"name": name + "_" + kind, "type": "mesh", "mesh": mesh_assets[key]}
+            attrs.update(mesh_pose(name, source, args.mesh_dir / file))
+            if kind == "visual":
+                attrs.update(contype="0", conaffinity="0", group="1")
+            else:
+                attrs.update(friction="0.8 0.05 0.01", group="2")
+            ET.SubElement(body, "geom", attrs)
         for jname, j, p, child in joints:
             if p != name: continue
             xyz, rpy = origin(j.find("origin"))

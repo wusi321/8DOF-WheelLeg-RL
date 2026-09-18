@@ -206,6 +206,20 @@ uv run list-envs
 
 本项目不包含真机驱动、ROS 2 部署和独立 ONNX Sim2Sim 工具；这些功能不属于当前训练工程的稳定接口。
 
+## 站姿与最低高度约束
+
+Flat/Rough 的运动训练和 play 均要求 `base_link` 坐标系原点距正下方地形至少 **0.13 m**，不是机身底面的离地间隙。使用独立向下射线测量当地地面，低于下限或射线无有效地面命中时终止 episode；左右小腿（包含膝部）触地也终止。硬终止用于拒绝低姿态行为，不是几何限位，无法保证单个仿真步内绝不越界。不要用 `--no-terminations` 验收高度约束。
+
+标准角度仍为髋 `0`、大腿 `1.02`、膝 `-1.57 rad`，用于初始化、动作默认偏置和新增站姿惩罚。动作是相对站姿的偏移，不是锁死角度。按当前模型几何估算，标准角度下两轮落地的机身原点约高 **0.1255 m**，与 13 cm 硬下限存在约 4.5 mm 差距，因此腿需要小幅伸展。初始化高度设为 0.15 m，高度奖励目标为 0.15 m。
+
+Recovery 不启用上述最低高度和膝触地终止，以免禁止倒地恢复；当前 Recovery 仍只是 Rough 的短 episode 配方，不能视为已实现完整恢复课程。
+
+机器人视觉网格与碰撞网格分离，只有碰撞网格参与接触，地形射线不扫描机器人自身。轮网格存在约 2.546 mm 的局部 Z 偏心，转换阶段修正其放置偏移，原始 URDF/STL 保留。模型和奖励变更后须从头训练，不沿用之前趴行策略的 checkpoint。
+
+```bash
+uv run python tests/test_standing.py
+```
+
 ## 参考与致谢
 
 训练设计参考了 [RC WheelLeg](https://github.com/zeitvex/RC_WheelLeg)、[MicroDuck RL](https://github.com/pollen-robotics/microduck_rl) 和 [MJLab](https://github.com/mujocolab/mjlab)。感谢相关作者和开源社区。
