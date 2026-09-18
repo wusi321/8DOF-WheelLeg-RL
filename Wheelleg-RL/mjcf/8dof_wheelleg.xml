@@ -69,13 +69,13 @@
     </body>
   </worldbody>
   <actuator>
-    <position name="left_hip_joint" joint="left_hip_joint" kp="35" kv="1.0" ctrlrange="-3.14 3.14" forcelimited="true" forcerange="-4 4" />
-    <position name="left_thigh_joint" joint="left_thigh_joint" kp="35" kv="1.0" ctrlrange="-3.14 3.14" forcelimited="true" forcerange="-4 4" />
-    <position name="left_knee_joint" joint="left_knee_joint" kp="35" kv="1.0" ctrlrange="-3.14 3.14" forcelimited="true" forcerange="-4 4" />
+    <position name="left_hip_joint" joint="left_hip_joint" kp="35" kv="1" ctrlrange="-3.14 3.14" forcelimited="true" forcerange="-4 4" />
+    <position name="left_thigh_joint" joint="left_thigh_joint" kp="35" kv="1" ctrlrange="-3.14 3.14" forcelimited="true" forcerange="-4 4" />
+    <position name="left_knee_joint" joint="left_knee_joint" kp="35" kv="1" ctrlrange="-3.14 3.14" forcelimited="true" forcerange="-4 4" />
     <velocity name="left_wheel_joint" joint="left_wheel_joint" kv="0.5" ctrlrange="-13 13" forcelimited="true" forcerange="-2 2" />
-    <position name="right_hip_joint" joint="right_hip_joint" kp="35" kv="1.0" ctrlrange="-3.14 3.14" forcelimited="true" forcerange="-4 4" />
-    <position name="right_thigh_joint" joint="right_thigh_joint" kp="35" kv="1.0" ctrlrange="-3.14 3.14" forcelimited="true" forcerange="-4 4" />
-    <position name="right_knee_joint" joint="right_knee_joint" kp="35" kv="1.0" ctrlrange="-3.14 3.14" forcelimited="true" forcerange="-4 4" />
+    <position name="right_hip_joint" joint="right_hip_joint" kp="35" kv="1" ctrlrange="-3.14 3.14" forcelimited="true" forcerange="-4 4" />
+    <position name="right_thigh_joint" joint="right_thigh_joint" kp="35" kv="1" ctrlrange="-3.14 3.14" forcelimited="true" forcerange="-4 4" />
+    <position name="right_knee_joint" joint="right_knee_joint" kp="35" kv="1" ctrlrange="-3.14 3.14" forcelimited="true" forcerange="-4 4" />
     <velocity name="right_wheel_joint" joint="right_wheel_joint" kv="0.5" ctrlrange="-13 13" forcelimited="true" forcerange="-2 2" />
   </actuator>
 </mujoco>

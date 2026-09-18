@@ -9,12 +9,18 @@ import sys
 from pathlib import Path
 
 # Loaded by path so the script runs without the mjlab runtime installed.
-_spec = importlib.util.spec_from_file_location(
-    "wheelleg_stance", Path(__file__).resolve().parents[1] / "src/wheelleg/stance.py"
-)
-S = importlib.util.module_from_spec(_spec)
-sys.modules[_spec.name] = S
-_spec.loader.exec_module(S)
+def _load(name, filename):
+    spec = importlib.util.spec_from_file_location(
+        name, Path(__file__).resolve().parents[1] / "src/wheelleg" / filename
+    )
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+S = _load("wheelleg_stance", "stance.py")
+ACT = _load("wheelleg_actuator_spec", "actuator_spec.py")
 
 
 def main() -> None:
@@ -37,6 +43,19 @@ def main() -> None:
     print(f"  shank tilt      = {nom.shank_angle:+.4f} rad "
           f"(reference {S.REFERENCE_STANCE[1] + S.REFERENCE_STANCE[2]:+.4f})")
     print(f"  centre of mass x= {S.com_x(thigh, knee, hip):+.5f} m")
+    print()
+
+    print(f"total moving mass = {S.TOTAL_MASS:.2f} kg (weight {S.TOTAL_MASS * S.GRAVITY:.1f} N, "
+          f"{S.TOTAL_MASS * S.GRAVITY / 2:.1f} N per leg)")
+    x = S.joint_x(thigh, knee)
+    torques = S.static_joint_torques(thigh, knee)
+    print("static holding torque at the nominal stance:")
+    for name in ("hip", "thigh", "knee"):
+        print(f"  {name:6s} arm={abs(x['contact'] - x[name]):.4f} m  "
+              f"torque={torques[name]:.3f} N*m")
+    print(f"  configured leg torque limit = {ACT.LEG_TORQUE_LIMIT:g} N*m "
+          f"({ACT.LEG_TORQUE_LIMIT / max(torques.values()):.1f}x the static peak)")
+    print(f"  configured wheel torque limit = {ACT.WHEEL_TORQUE_LIMIT:g} N*m")
     print()
 
     print(f"  collapse termination below {S.COLLAPSE_CLEARANCE:.3f} m")

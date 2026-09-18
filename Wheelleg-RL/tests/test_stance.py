@@ -115,5 +115,55 @@ class EnvironmentConfigTests(unittest.TestCase):
         self.assertFalse((root / "src/wheelleg/mdp/only_positive_rewards.py").exists())
 
 
+class ActuatorSpecTests(unittest.TestCase):
+    """The torque limits must exist in exactly one place."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.spec = _load("wheelleg_actuator_spec", "src/wheelleg/actuator_spec.py")
+
+    def test_generated_mjcf_matches_the_actuator_spec(self):
+        """Standalone-viewer limits in the XML may not drift from the runtime."""
+        import xml.etree.ElementTree as ET
+
+        xml = ET.parse(root / "mjcf/8dof_wheelleg.xml").getroot()
+        seen = {"position": 0, "velocity": 0}
+        for act in xml.findall("actuator/*"):
+            kind = act.tag
+            seen[kind] += 1
+            low, high = (float(v) for v in act.get("forcerange").split())
+            limit = (
+                self.spec.LEG_TORQUE_LIMIT if kind == "position" else self.spec.WHEEL_TORQUE_LIMIT
+            )
+            self.assertEqual((-low, high), (limit, limit))
+            self.assertEqual(act.get("forcelimited"), "true")
+        self.assertEqual(seen, {"position": 6, "velocity": 2})
+
+    def test_runtime_config_uses_the_spec(self):
+        source = (root / "src/wheelleg/robot_cfg.py").read_text(encoding="utf-8")
+        self.assertIn("from .actuator_spec import", source)
+        for name in ("LEG_TORQUE_LIMIT", "WHEEL_TORQUE_LIMIT", "LEG_KP", "LEG_KD", "WHEEL_KD"):
+            self.assertIn(name, source)
+        # No bare magic gains may reappear next to the actuator construction.
+        self.assertNotIn("effort_limit=4.0", source)
+        self.assertNotIn("effort_limit=2.0", source)
+
+    def test_limits_are_positive_and_leave_static_headroom(self):
+        self.assertGreater(self.spec.LEG_TORQUE_LIMIT, 0.0)
+        self.assertGreater(self.spec.WHEEL_TORQUE_LIMIT, 0.0)
+        hip, thigh, knee = stance.NOMINAL_STANCE
+        peak = max(stance.static_joint_torques(thigh, knee).values())
+        # Holding the stance must not sit near the limit, or the policy would be
+        # fighting saturation just to stand still.
+        self.assertGreater(self.spec.LEG_TORQUE_LIMIT, 5.0 * peak)
+
+    def test_mass_report_matches_the_mjcf_inertials(self):
+        import xml.etree.ElementTree as ET
+
+        xml = ET.parse(root / "mjcf/8dof_wheelleg.xml").getroot()
+        total = sum(float(i.get("mass")) for i in xml.iter("inertial"))
+        self.assertAlmostEqual(total, stance.TOTAL_MASS, places=6)
+
+
 if __name__ == "__main__":
     unittest.main()

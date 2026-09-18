@@ -3,14 +3,27 @@
 The converter intentionally uses URDF inertials and joint transforms, while adding
 explicit wheel/leg actuators and stable collision defaults for RL. It also trims
 whitespace from legacy SolidWorks joint names.
+
+The embedded actuator block only exists so the file can be opened in a
+standalone MuJoCo viewer; training deletes it and rebuilds the actuators from
+``src/wheelleg/actuator_spec.py``, which is where its gains and torque limits
+come from.
 """
 from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib.util
 import math
 import xml.etree.ElementTree as ET
 from pathlib import Path
+
+# Loaded by path so this build script keeps working without the training runtime.
+_spec = importlib.util.spec_from_file_location(
+    "wheelleg_actuator_spec", Path(__file__).resolve().parents[1] / "src/wheelleg/actuator_spec.py"
+)
+SPEC = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(SPEC)
 
 
 def f(v: str) -> str:
@@ -163,9 +176,21 @@ def main() -> None:
     actuators = ET.SubElement(mj, "actuator")
     for jname, _, _, _ in joints:
         if "wheel" in jname:
-            ET.SubElement(actuators, "velocity", {"name": jname, "joint": jname, "kv": "0.5", "ctrlrange": "-13 13", "forcelimited": "true", "forcerange": "-2 2"})
+            ET.SubElement(actuators, "velocity", {
+                "name": jname, "joint": jname,
+                "kv": f"{SPEC.WHEEL_KD}",
+                "ctrlrange": f"{-SPEC.WHEEL_MAX_SPEED:g} {SPEC.WHEEL_MAX_SPEED:g}",
+                "forcelimited": "true",
+                "forcerange": f"{-SPEC.WHEEL_TORQUE_LIMIT:g} {SPEC.WHEEL_TORQUE_LIMIT:g}",
+            })
         else:
-            ET.SubElement(actuators, "position", {"name": jname, "joint": jname, "kp": "35", "kv": "1.0", "ctrlrange": "-3.14 3.14", "forcelimited": "true", "forcerange": "-4 4"})
+            ET.SubElement(actuators, "position", {
+                "name": jname, "joint": jname,
+                "kp": f"{SPEC.LEG_KP:g}", "kv": f"{SPEC.LEG_KD:g}",
+                "ctrlrange": f"{-SPEC.LEG_CTRL_RANGE:g} {SPEC.LEG_CTRL_RANGE:g}",
+                "forcelimited": "true",
+                "forcerange": f"{-SPEC.LEG_TORQUE_LIMIT:g} {SPEC.LEG_TORQUE_LIMIT:g}",
+            })
     ET.indent(mj, space="  ")
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(ET.tostring(mj, encoding="unicode"), encoding="utf-8")

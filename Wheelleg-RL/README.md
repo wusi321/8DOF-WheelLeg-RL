@@ -244,6 +244,36 @@ uv run python tests/test_stance.py        # 几何与阈值，无需 MuJoCo
 uv run python tests/test_standing.py      # 数值约束，需要 torch/MuJoCo
 ```
 
+## 执行器与力矩上限
+
+这是**当前训练实际生效**的配置，唯一来源是 `src/wheelleg/actuator_spec.py`：
+
+| 关节 | 仿真执行器 | 增益 | 力矩上限 |
+|---|---|---|---|
+| 6 个腿部关节（髋/大腿/膝） | `<position>` | `kp=35`、`kd=1.0` | **±4 N·m** |
+| 2 个轮关节 | `<velocity>` | `kd=0.5` | **±2 N·m** |
+
+力矩上限的作用方式是 `forcelimited=True` + `forcerange=±上限`，即无论位置误差多大，关节力矩都被裁到该范围。轮速指令本身**不裁剪**（`ctrllimited=False`），所以轮子没有显式最高转速，只有力矩上限在限制加速度。
+
+**这些数字不是这台机器人的实测电机参数。** 原始 URDF 里每个关节都导出为 `<limit ... effort="0" velocity="0" />`，即**机器人描述文件完全没有力矩信息**。当前数值是从 16DOF 参考机（`05_software-16DOF...`，那台机器所有 16 个执行器都是 **17 N·m**，且机体高度 0.42 m）按比例手改下来的占位值。
+
+按几何估算的**静态保持力矩**（整机 1.6 kg，单腿承担 7.8 N，`uv run python scripts/stance_kinematics.py` 可复现）：
+
+```
+hip    arm=0.0463 m  torque=0.363 N*m
+thigh  arm=0.0312 m  torque=0.245 N*m
+knee   arm=0.0362 m  torque=0.284 N*m
+```
+
+**站立只需约 0.36 N·m，而限制是 4 N·m，约 11 倍余量。** 所以：
+
+- 力矩上限**不是**当前动作受限的原因，之前爬行也不是力矩不够造成的。
+- 反过来，4 N·m 对这台 1.6 kg 的机器人偏宽松，仿真允许的加速/跳跃能力可能超过真机。若要 sim-to-real，需要把上限降到真机能给的值。
+
+**要改成真机参数，需要你提供其中之一**：电机型号 + 减速比，或减速器输出端的额定/峰值力矩，或「电流上限 × 转矩常数 Kt」。拿到后只需改 `actuator_spec.py`、重新运行 `uv run python scripts/urdf_to_mjcf.py` 生成 XML，`tests/test_stance.py` 会校验 XML 与运行时配置没有脱节。
+
+生成 MJCF 中的 `<actuator>` 块只是为了能用 MuJoCo 单独打开查看；训练时 `robot_cfg.get_spec()` 会删除该块并按本表重建，因此以本表为准。
+
 ## 参考与致谢
 
 训练设计参考了 [RC WheelLeg](https://github.com/zeitvex/RC_WheelLeg)、[MicroDuck RL](https://github.com/pollen-robotics/microduck_rl) 和 [MJLab](https://github.com/mujocolab/mjlab)。感谢相关作者和开源社区。

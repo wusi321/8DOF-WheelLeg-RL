@@ -26,8 +26,8 @@ THIGH_BODY = (0.0774767604552631, 0.0167732395447309, 0.0)
 SHANK_BODY = (0.0, -0.00300000000000789, -0.0900000000000087)
 WHEEL_BODY = (0.00127323954474146, 0.0235000000000081, -0.0926849666847982)
 
-# Body masses (kg) and their inertial offsets in their own frames, used only to
-# check that the support line sits under the centre of mass.
+# Body masses (kg) and their inertial offsets in their own frames, used to check
+# that the support line sits under the centre of mass and to size the actuators.
 BODY_MASSES = {
     "base": (0.5, (0.0, 0.0, 0.03)),
     "hip": (0.2, (0.05, 0.0, 0.0)),
@@ -35,6 +35,12 @@ BODY_MASSES = {
     "shank": (0.15, (0.0, 0.01, -0.08)),
     "wheel": (0.1, (0.0, 0.01, 0.0)),
 }
+
+GRAVITY = 9.81
+
+TOTAL_MASS = BODY_MASSES["base"][0] + 2.0 * sum(
+    BODY_MASSES[name][0] for name in ("hip", "thigh", "shank", "wheel")
+)
 
 # Outer rim radius of the wheel meshes, which are centred on the axle after the
 # converter's documented rim correction. Ground contact is one radius below it.
@@ -104,6 +110,32 @@ def leg_pose(thigh: float, knee: float, hip: float = 0.0) -> LegPose:
 
 def clearance(thigh: float, knee: float, hip: float = 0.0) -> float:
     return leg_pose(thigh, knee, hip).base_clearance
+
+
+def joint_x(thigh: float, knee: float) -> dict[str, float]:
+    """Base-frame x of the hip/thigh/knee axes and of the wheel contact point.
+
+    Rotation about the hip's X axis leaves every x coordinate unchanged, so
+    abduction does not appear here.
+    """
+    thigh_x = HIP_BODY[0] + THIGH_BODY[0]
+    return {
+        "hip": HIP_BODY[0],
+        "thigh": thigh_x,
+        "knee": thigh_x + _rot_y(SHANK_BODY, thigh)[0],
+        "contact": leg_pose(thigh, knee).axle_x,
+    }
+
+
+def static_joint_torques(thigh: float, knee: float) -> dict[str, float]:
+    """Vertical-load torque (N*m) each leg joint holds at a level stance.
+
+    A vertical force ``F`` at the wheel contact creates a torque ``F * dx`` about
+    the body-frame Y axis, where ``dx`` is the horizontal arm to that joint.
+    """
+    load = TOTAL_MASS * GRAVITY / 2.0  # one leg carries half the robot
+    x = joint_x(thigh, knee)
+    return {name: load * abs(x["contact"] - x[name]) for name in ("hip", "thigh", "knee")}
 
 
 def com_x(thigh: float, knee: float, hip: float = 0.0) -> float:

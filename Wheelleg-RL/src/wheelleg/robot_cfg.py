@@ -5,6 +5,13 @@ from mjlab.actuator import BuiltinPositionActuatorCfg, BuiltinVelocityActuatorCf
 from mjlab.entity import EntityArticulationInfoCfg, EntityCfg
 from mjlab.utils.spec_config import CollisionCfg
 
+from .actuator_spec import (
+    LEG_KD,
+    LEG_KP,
+    LEG_TORQUE_LIMIT,
+    WHEEL_KD,
+    WHEEL_TORQUE_LIMIT,
+)
 from .stance import NOMINAL_STANCE, STANDING_CLEARANCE, WHEEL_RADIUS, WHEEL_TRACK
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -29,10 +36,10 @@ def get_spec() -> mujoco.MjSpec:
 
 
 LEG_ACTUATOR_CFG = BuiltinPositionActuatorCfg(
-    target_names_expr=LEG_EXPR, stiffness=35.0, damping=1.0, effort_limit=4.0
+    target_names_expr=LEG_EXPR, stiffness=LEG_KP, damping=LEG_KD, effort_limit=LEG_TORQUE_LIMIT
 )
 WHEEL_ACTUATOR_CFG = BuiltinVelocityActuatorCfg(
-    target_names_expr=WHEEL_EXPR, damping=0.5, effort_limit=2.0
+    target_names_expr=WHEEL_EXPR, damping=WHEEL_KD, effort_limit=WHEEL_TORQUE_LIMIT
 )
 ARTICULATION_CFG = EntityArticulationInfoCfg(
     actuators=(LEG_ACTUATOR_CFG, WHEEL_ACTUATOR_CFG), soft_joint_pos_limit_factor=0.95
