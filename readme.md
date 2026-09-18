@@ -54,3 +54,7 @@ cd Wheelleg-RL
 ## 致谢与参考
 
 本项目的训练结构和工程经验参考了 RC WheelLeg：<https://github.com/zeitvex/RC_WheelLeg>，以及 MicroDuck RL：<https://github.com/pollen-robotics/microduck_rl>。感谢相关作者和开源社区的工作。
+
+## 开源协议
+
+本项目采用 [MIT License](LICENSE) 开源协议。除非另有说明，项目自有代码均遵循 MIT License；第三方依赖、模型、网格和参考项目仍以其各自的许可证和版权声明为准。
