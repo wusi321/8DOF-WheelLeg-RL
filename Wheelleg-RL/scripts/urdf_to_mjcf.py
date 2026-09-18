@@ -23,6 +23,25 @@ def origin(el: ET.Element | None) -> tuple[str, str]:
     return f(el.get("xyz", "0 0 0")), f(el.get("rpy", "0 0 0"))
 
 
+def _positive_inertia(inertia: ET.Element) -> tuple[float, ...]:
+    """Return a numerically positive-definite inertia matrix.
+
+    Some SolidWorks URDF exports contain zero principal inertia or a product
+    of inertia exactly equal to the positive-definiteness boundary. MuJoCo
+    rejects those matrices during model compilation. A symmetric matrix that
+    is strictly diagonally dominant with positive diagonal entries is positive
+    definite, so we minimally increase diagonal terms when necessary.
+    """
+    values = [float(inertia.get(k, "0")) for k in ("ixx", "iyy", "izz", "ixy", "ixz", "iyz")]
+    ixx, iyy, izz, ixy, ixz, iyz = values
+    scale = max(abs(ixx), abs(iyy), abs(izz), abs(ixy), abs(ixz), abs(iyz), 1.0e-6)
+    margin = max(1.0e-8, scale * 1.0e-4)
+    ixx = max(ixx, abs(ixy) + abs(ixz) + margin)
+    iyy = max(iyy, abs(ixy) + abs(iyz) + margin)
+    izz = max(izz, abs(ixz) + abs(iyz) + margin)
+    return ixx, iyy, izz, ixy, ixz, iyz
+
+
 def inertial(link: ET.Element) -> ET.Element | None:
     src = link.find("inertial")
     if src is None:
@@ -32,12 +51,12 @@ def inertial(link: ET.Element) -> ET.Element | None:
     out.set("pos", xyz)
     if rpy != "0 0 0":
         out.set("euler", rpy)
-    out.set("mass", src.findtext("mass/@value", default="0")) if False else None
     mass = src.find("mass")
     inertia = src.find("inertia")
     out.set("mass", mass.get("value", "0") if mass is not None else "0")
     if inertia is not None:
-        out.set("fullinertia", " ".join(inertia.get(k, "0") for k in ("ixx", "iyy", "izz", "ixy", "ixz", "iyz")))
+        values = _positive_inertia(inertia)
+        out.set("fullinertia", " ".join(f"{value:.12g}" for value in values))
     return out
 
 
