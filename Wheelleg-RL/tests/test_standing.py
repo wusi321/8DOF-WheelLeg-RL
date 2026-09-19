@@ -478,5 +478,53 @@ class FallenTooLongTests(unittest.TestCase):
         self.assertFalse(term(env, 0.5, 0.9).item())
 
 
+class DownStateTests(unittest.TestCase):
+    """A fall must not stack every posture penalty on top of the next."""
+
+    @staticmethod
+    def _down_env(**kwargs):
+        import math
+
+        return _env([0.03], gravity=[(math.sin(1.4), 0.0, -math.cos(1.4))],
+                    base_contact=[1], **kwargs)
+
+    def test_a_fallen_robot_is_detected(self):
+        self.assertTrue(standing.is_down(self._down_env()).all().item())
+        self.assertFalse(standing.is_down(_env([0.145])).any().item())
+
+    def test_a_fallen_robot_is_not_charged_the_crawl_penalty(self):
+        """Wriggling on the ground is not choosing a low gait."""
+        env = self._down_env(speeds=[0.5], wheel_contact=[[0, 0]])
+        self.assertEqual(standing.low_posture_locomotion(env)[0].item(), 0.0)
+
+    def test_a_fallen_robot_is_not_charged_for_unsupported_wheels(self):
+        env = self._down_env()
+        env.scene["feet_ground_contact"].data.current_air_time = torch.tensor([[3.0, 3.0]])
+        self.assertEqual(standing.no_wheel_support(env)[0].item(), 0.0)
+
+    def test_a_fallen_robot_is_not_charged_body_contact_twice(self):
+        self.assertEqual(standing.base_ground_contact_cost(self._down_env())[0].item(), 0.0)
+
+    def test_an_upright_robot_keeps_the_crawl_and_support_penalties(self):
+        env = _env([0.02], speeds=[0.5], base_contact=[0], wheel_contact=[[0, 0]])
+        env.scene["feet_ground_contact"].data.current_air_time = torch.tensor([[3.0, 3.0]])
+        self.assertGreater(standing.low_posture_locomotion(env)[0].item(), 0.0)
+        self.assertGreater(standing.no_wheel_support(env)[0].item(), 0.0)
+
+    def test_an_upright_robot_keeps_the_body_contact_penalty(self):
+        """The contact gate looks only at tilt, so it cannot switch itself off."""
+        env = _env([0.02], base_contact=[1])
+        self.assertTrue(standing.is_down(env)[0].item())  # contact alone means down
+        self.assertEqual(standing.base_ground_contact_cost(env)[0].item(), 1.0)
+
+    def test_tilt_cost_saturates(self):
+        """Lying down must not produce an unbounded penalty."""
+        import math
+
+        flat = _env([0.145], gravity=[(math.sin(math.pi / 2), 0.0, -math.cos(math.pi / 2))])
+        self.assertAlmostEqual(standing.body_level_error(flat)[0].item(),
+                               standing.MAX_TILT_COST, places=6)
+
+
 if __name__ == "__main__":
     unittest.main()

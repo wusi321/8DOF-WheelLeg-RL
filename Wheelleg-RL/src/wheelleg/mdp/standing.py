@@ -58,13 +58,17 @@ CROUCH_CLEARANCE_DROP = 0.015  # m allowed off both height thresholds
 
 # Body attitude: roll is always costly, a forward lean is free up to the
 # allowance, and leaning backwards costs extra because it is how the robot
-# wheelies over under a large forward command.
+# wheelies over under a large forward command. The cost saturates so that being
+# on the ground cannot produce an unbounded penalty.
 FORWARD_LEAN_ALLOWANCE = 0.30  # rad, about 17 degrees
 BACKWARD_LEAN_SCALE = 1.5
+MAX_TILT_COST = 0.6  # rad, about 34 degrees
 
-# How far the body may tip, and for how long, before the episode is ended.
+# How far the body may tip, and for how long, before the episode is ended. A
+# get-up takes a second or two, so three seconds is enough time to practise while
+# halving how long a failed episode spends accumulating penalties.
 DOWN_TILT_LIMIT = 0.9  # rad, about 52 degrees
-MAX_DOWN_TIME = 5.0  # s
+MAX_DOWN_TIME = 3.0  # s
 
 # Sideways speed that counts as genuinely translating sideways rather than
 # merely rotating, used by the lateral step reward.
@@ -111,6 +115,29 @@ def forward_speed(env):
     return torch.nan_to_num(env.scene["wheelleg"].data.root_link_lin_vel_b[:, 0])
 
 
+def total_tilt(env):
+    """Angle between the body's z axis and world up, in radians."""
+    gravity_z = torch.nan_to_num(env.scene["wheelleg"].data.projected_gravity_b[:, 2])
+    return torch.acos(torch.clamp(-gravity_z, -1.0, 1.0))
+
+
+def is_down(env, tilt_limit=DOWN_TILT_LIMIT):
+    """True when the robot has fallen: badly tilted, or the body on the ground."""
+    return (total_tilt(env) > tilt_limit) | base_ground_contact(env)
+
+
+def upright_gate(env, tilt_limit=DOWN_TILT_LIMIT):
+    """1 while the robot is up, 0 once it is down.
+
+    The posture rewards exist to shape a *gait*: they must stop applying once the
+    robot has fallen, because being on the ground is not a gait choice. Without
+    this the fall state accumulated roughly -20/s from half a dozen terms at once,
+    episode returns ran to -390, the value loss blew up and the policy collapsed
+    to a near-deterministic "stay down" behaviour it could not explore out of.
+    """
+    return (~is_down(env, tilt_limit)).float()
+
+
 def crouch_gate(env, reference=CROUCH_SPEED_REFERENCE):
     """How much of the high-speed crouch allowance is available, 0 to 1.
 
@@ -142,12 +169,16 @@ def low_posture_locomotion(
     Zero for a parked robot at any height, so low posture and lying on the ground
     are legal; it rises linearly as a *moving* robot sinks below the requirement,
     which itself drops a little at speed to allow a forward-leaning crouch.
+
+    Also zero once the robot is down: a fallen robot wriggling is not choosing a
+    crawling gait, and charging it the full crawl rate for the seconds it is down
+    is what turned falls into -100 episodes.
     """
     floor = effective_min_clearance(env, min_clearance)
     clearance = base_clearance(env)
     deficit = torch.clamp((floor - clearance) / floor, 0.0, 1.0)
     deficit = torch.where(_measurable(clearance), deficit, torch.zeros_like(deficit))
-    return deficit * moving_gate(env, linear_speed, yaw_rate)
+    return deficit * moving_gate(env, linear_speed, yaw_rate) * upright_gate(env)
 
 
 def standing_height_error(env, target_height=STANDING_CLEARANCE):
@@ -178,6 +209,7 @@ def body_level_error(
     env,
     forward_allowance=FORWARD_LEAN_ALLOWANCE,
     backward_scale=BACKWARD_LEAN_SCALE,
+    max_cost=MAX_TILT_COST,
 ):
     """Cost of tilting the body away from world vertical, in radians.
 
@@ -188,12 +220,15 @@ def body_level_error(
     may lean forward to resist pitching over backwards.
 
     Ramped linearly rather than squared: a squared tilt cost is flat near upright
-    and cannot pull back the steady bias that rolling on a slope produces.
+    and cannot pull back the steady bias that rolling on a slope produces. The
+    cost saturates at ``max_cost`` so that lying on the ground cannot turn into a
+    club large enough to swamp the value function.
     """
     roll, pitch = body_tilt(env)
     allowed = forward_allowance * crouch_gate(env)
     forward_excess = torch.clamp(-pitch - allowed, min=0.0)
-    return torch.abs(roll) + backward_scale * torch.clamp(pitch, min=0.0) + forward_excess
+    cost = torch.abs(roll) + backward_scale * torch.clamp(pitch, min=0.0) + forward_excess
+    return torch.clamp(cost, max=max_cost)
 
 
 def wheel_height_difference(env, asset_cfg=None):
@@ -238,6 +273,24 @@ def base_ground_contact(env):
     return (found.reshape(env.num_envs, -1) > 0).any(dim=1)
 
 
+def base_ground_contact_cost(env):
+    """Body-on-ground cost, suspended while the robot is already down.
+
+    It is here to discourage travelling on the belly, not to add a second charge
+    for being on the ground; the height error and the tilt cost already cover that.
+    """
+    return base_ground_contact(env).float() * _not_down_ignoring_base_contact(env)
+
+
+def _not_down_ignoring_base_contact(env, tilt_limit=DOWN_TILT_LIMIT):
+    """Upright gate that only looks at tilt.
+
+    ``is_down`` ORs in body contact, so it cannot be reused inside the body
+    contact term itself or the term would always switch itself off.
+    """
+    return (total_tilt(env) <= tilt_limit).float()
+
+
 def wheel_air_time(env, sensor_name="feet_ground_contact"):
     """Longest current air time across the wheels, in seconds."""
     air = env.scene[sensor_name].data.current_air_time
@@ -268,10 +321,12 @@ def no_wheel_support(
 
     Lifting one leg to step sideways is free for as long as it takes, because the
     other wheel still carries the robot. Only losing *every* wheel is a fault, and
-    that is what the kneeling gait did.
+    that is what the kneeling gait did. Suspended once the robot is down, where
+    wheels in the air are the expected consequence of the fall rather than a
+    posture choice.
     """
     excess = torch.clamp(wheel_support_time(env, sensor_name) - allowance, min=0.0)
-    return torch.clamp(excess / horizon, 0.0, 1.0)
+    return torch.clamp(excess / horizon, 0.0, 1.0) * upright_gate(env)
 
 
 def wheel_contact_fraction(env, sensor_name="feet_ground_contact"):

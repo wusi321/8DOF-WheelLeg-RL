@@ -318,22 +318,31 @@ uv run list-envs
 
 这样才可能学会起身：之前一倾斜就重置，等于在它真正摔倒前就把它救回来，倒地后的几秒它从来没有机会练习站起。代价是失败 episode 会多跑几秒、样本效率略降，这是学起身必须付的成本。
 
-### 全地形：难度起点不再等于「平地」
+### 地形难度：起点必须"几乎平"，由课程自己爬上去
 
-**这是上一轮「在矮楼梯和矮墙前怼着不抬腿」的根本原因。** MJLab 的障碍高度按难度插值：
+**障碍高度按难度插值，而难度 = `level/(num_rows-1)`：**
 
 ```
-step_height = step_height_range[0] + difficulty × (range[1] - range[0])
-difficulty  = level / (num_rows - 1) = level / 9
+step_height = range[0] + difficulty × (range[1] - range[0])
 ```
 
-默认 `difficulty_range=(0.0, 1.0)`，而 `step_height_range=(0.0, 0.12)` → **level 0 的 step_height 恰好是 0，楼梯地形在 level 0 就是平地**；`random_grid` 同理（代码里有显式注释 "grid_height == 0 (difficulty 0) means a flat grid"）。上一轮实测 `Curriculum/terrain_levels/mean = 0.5563`，换成难度只有 0.062，对应的台阶高度约 **7 mm**——**策略整轮基本都在平地上训练，从来没学过把轮子抬过台阶。**
+默认 `difficulty_range=(0.0, 1.0)` 时 level 0 的 `step_height` 恰好是 **0** —— 楼梯地形在 level 0 就是平地（源码里有显式分支处理这个退化情形）。上一轮实测 `Curriculum/terrain_levels/mean = 0.5563`，对应难度 0.062、台阶约 **7 mm**，**策略整轮基本在平地上训练，从没学过抬轮过台阶。**
 
-现在把 `difficulty_range` 改成 **(0.3, 1.0)**，保证每一级都有真实障碍：楼梯 3.6–12 cm、随机网格 ±3.6 cm、矮墙 6.4–12 cm。
+但把下界直接抬到 0.3 是**错的**：`max_init_terrain_level=5` 会让一半环境从**第 5 级**起步，难度 0.3–0.65，也就是**从第一个 episode 起就面对 3.6–7.8 cm 的障碍**——这台 3 cm 轮半径的机器人站都站不住，于是策略崩了（见下）。
 
-**同时修掉地形课程的降级条件。** `terrain_levels_vel_strict` 原本用「距出生点的净位移」判定升降级：晋级要净位移 > 4 m，降级是净位移 < 指令速度 × 20 s × 0.33。而本任务 `rel_heading_envs = 1.0`，**所有环境都在转向行走**：以 0.25 m/s 前进、0.3 rad/s 偏航的机器人一个 episode 走约 4.8 m 弧长，但**净位移只有约 1.6 m**——低于降级线，于是**每轮都被降级**，难度被永久压在最底层。
+现在的取值是**下界 0.02（约 2.4 mm，等同平地但不退化）+ `max_init_terrain_level = 1`**，让所有环境从最简两级开始，再由**已经修好的课程**逐步抬升难度。
 
-现在改用**路径长度**（新增 `PathLength` 指标，逐步累加实际走过的距离，并排除重置瞬移）作为进度量。这样「走得多」就会被晋级，直到地形难到走不动为止，课程才会自己稳定下来。观测项 `Curriculum/terrain_levels/mean` 应随训练上升，而不再是 0.55。
+**同时修掉了地形课程的降级条件。** `terrain_levels_vel_strict` 原本用「距出生点的净位移」：晋级要 >4 m，降级是 < 指令速度 × 20 s × 0.33。而本任务 `rel_heading_envs = 1.0`，**所有环境都在转向行走** —— 以 0.25 m/s 前进、0.3 rad/s 偏航的机器人一个 episode 走约 4.8 m 弧长，但**净位移只有约 1.6 m**，低于降级线，**每轮都被降级**，难度被永久压在最底层。现在改用**路径长度**（新增 `PathLength` 指标，逐步累加实际行程并排除重置瞬移）。
+
+**这一项已经验证有效**：课程均值从 **0.5563 升到 2.113**，最高 9 级，8 种地形全部放开。
+
+### 摔倒状态不再叠加所有惩罚
+
+第一次改「5 s 才重置」时出了严重问题：倒地的机器人同时吃到 `body_level −7.2/s`、`low_posture_locomotion −5.7/s`、`stair_lateral_yaw_drift −2.6/s`、`base_contact_penalty −1.8/s`、`no_wheel_support −0.85/s`、`leg_joint_acc_l2 −0.85/s`……**合计约 −20/s，而正奖励只有约 +0.5/s**，episode 回报跑到 **−392**，value loss 冲到 **48.7**，策略熵变成 **−3.47**、动作标准差 0.38 → 0.17 —— **策略坍缩成"躺着不动"，再也探索不回来。**
+
+现在 `upright_gate` 统一门控：一旦判定倒地（倾角 > 0.9 rad **或**机身触地），`low_posture_locomotion`、`no_wheel_support`、`base_contact_penalty` **全部归零** —— 这些项的职责是塑造**步态**，而倒地不是一个步态选择。倒地期间只剩高度误差（最多 −4/s）和倾角代价（上限 `MAX_TILT_COST`，最多 −6/s）提供"站起来"的动力，量级从 −20/s 降到约 −10/s。
+
+`MAX_DOWN_TIME` 同时从 5 s 收到 **3 s**：起身动作只需 1–2 s，3 s 足够练习，但惩罚暴露时间减半。
 
 ### 高速时允许降低身位
 

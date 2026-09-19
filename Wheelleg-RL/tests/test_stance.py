@@ -142,7 +142,17 @@ class EnvironmentConfigTests(unittest.TestCase):
     def test_terrain_difficulty_never_starts_at_zero(self):
         """Difficulty 0 makes obstacle terrains literally flat."""
         source = (root / "src/wheelleg/config/env_cfgs.py").read_text(encoding="utf-8")
-        self.assertIn("tg.difficulty_range = (0.3, 1.0)", source)
+        self.assertIn("tg.difficulty_range = (0.02, 1.0)", source)
+        # The lower bound must stay gentle enough to stand on to begin with.
+        self.assertIn("max_init_terrain_level = 1", source)
+
+    def test_falls_do_not_accumulate_every_penalty_at_once(self):
+        """Being down must not stack crawl, support, contact and tilt penalties."""
+        source = (root / "src/wheelleg/mdp/standing.py").read_text(encoding="utf-8")
+        self.assertIn("def upright_gate", source)
+        # The crawl and support penalties are suspended once the robot is down.
+        self.assertIn("* upright_gate(env)", source)
+        self.assertIn("MAX_TILT_COST", source)
 
     def test_terrain_curriculum_uses_path_length_not_net_displacement(self):
         """Circling under heading commands demotes a walking robot every episode."""

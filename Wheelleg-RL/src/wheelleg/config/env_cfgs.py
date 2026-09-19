@@ -62,7 +62,7 @@ def _posture_contract(cfg, enforce_standing=True):
         # wheel. Both are penalties, not resets, so a fall is still allowed to
         # happen; they only make kneeling unprofitable.
         cfg.rewards["base_contact_penalty"] = RewardTermCfg(
-            func=standing.base_ground_contact, weight=-10.0)
+            func=standing.base_ground_contact_cost, weight=-10.0)
         cfg.rewards["no_wheel_support"] = RewardTermCfg(
             func=standing.no_wheel_support,
             weight=-10.0,
@@ -110,10 +110,11 @@ def _posture_contract(cfg, enforce_standing=True):
         # that rolling along a bank produces; a squared cost is flat near upright.
         cfg.rewards["body_level"] = RewardTermCfg(
             func=standing.body_level_error,
-            weight=-12.0,
+            weight=-10.0,
             params={
                 "forward_allowance": standing.FORWARD_LEAN_ALLOWANCE,
                 "backward_scale": standing.BACKWARD_LEAN_SCALE,
+                "max_cost": standing.MAX_TILT_COST,
             },
         )
         cfg.rewards["standing_pose"] = RewardTermCfg(
@@ -177,12 +178,20 @@ def rough_env_cfg(play=False, enforce_standing=True):
     # Obstacle height is interpolated by difficulty, and difficulty is
     # level/(num_rows-1). With the default range (0.0, 1.0) the easiest level
     # generates *zero-height* obstacles: a pyramid staircase with step_height 0
-    # is flat ground, and so is a random grid with grid_height 0. The measured
-    # terrain curriculum then averaged level 0.556, i.e. roughly 7 mm of
-    # obstacle, so the policy spent its whole run on effectively flat ground and
-    # never learned to lift a wheel over a step. Starting the range above zero
-    # guarantees a real obstacle at every level.
-    tg.difficulty_range = (0.3, 1.0)
+    # is flat ground, and so is a random grid with grid_height 0. That let the
+    # policy spend a whole run on effectively flat ground and never learn to lift
+    # a wheel over a step.
+    #
+    # The lower bound must still be small enough to start from: an earlier
+    # attempt at 0.3 put every environment on 3.6-7.8 cm obstacles from the first
+    # episode, which this robot cannot stand on, and the policy collapsed. 0.02
+    # is a 2.4 mm step, i.e. effectively flat but non-degenerate, and the terrain
+    # curriculum -- now driven by distance actually travelled -- raises the
+    # difficulty as the robot proves it can get around.
+    tg.difficulty_range = (0.02, 1.0)
+    # Start every environment at the two easiest levels for the same reason;
+    # max_init_terrain_level=5 previously dropped half of them onto 6-8 cm steps.
+    cfg.scene.terrain.max_init_terrain_level = 1
     # PathLength feeds the terrain curriculum, which only advances when the robot
     # actually travels; see the note in terrain_levels_vel_strict.
     cfg.metrics["path_length_m"] = MetricsTermCfg(func=PathLength)
