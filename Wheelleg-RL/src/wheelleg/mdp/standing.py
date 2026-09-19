@@ -897,6 +897,123 @@ def base_contact_penalty_relieved(env, scale=BASE_CONTACT_RELIEF):
     return base_ground_contact_cost(env) * base_contact_relief(env, scale)
 
 
+# ---------------------------------------------------------------------------
+# Getting over an obstacle: paying for the one thing that makes it possible.
+#
+# Every earlier change here removed a price -- the leg-motion tax, the body-contact
+# charge, the fixed-stance terms -- and the robot still would not lift a wheel. The
+# reason is that removing a wall is not the same as opening a door: nothing was
+# paying for the manoeuvre, so the cheapest behaviour stayed "press forward and
+# deadlock", which is exactly what play showed, wheel force reading opposite to the
+# commanded direction.
+#
+# That opposing force is a command shortfall. Force produces acceleration produces
+# velocity, and the step the servo is fighting is the last one, so a commanded speed
+# the robot is not achieving is the same state without needing a force sensor, and
+# with a shape this module controls.
+#
+# Two wheels in line cannot both leave the ground. With four, one leg in the air
+# still leaves three; with two it leaves one, and the machine falls. So the only way
+# up a step is to plant one wheel and swing the other onto it, and that is what
+# these two terms price: the configuration is paid for while the robot is blocked,
+# and the deadlock itself is charged.
+# ---------------------------------------------------------------------------
+WHEEL_STEP_LIFT_HEIGHT = 0.05
+"""Clearance above the terrain that counts as a wheel lifted onto something.
+
+The rolling axle sits one wheel radius up, 0.03 m, so this is clear of rolling and
+below the 0.06 m the swing shaper aims at: a token lift earns nothing.
+"""
+
+
+def blocked_gate(env, command_name="twist", blocked_speed=RELIEF_BLOCKED_SPEED):
+    """1 where the robot is asked to travel and is not achieving it.
+
+    The same shortfall ``leg_motion_scale`` relaxes on. Defined separately rather
+    than shared, because that function is on the converged baseline and is not worth
+    editing for tidiness.
+    """
+    asset = env.scene["wheelleg"]
+    command = env.command_manager.get_command(command_name)
+    speed = torch.norm(asset.data.root_link_lin_vel_b[:, :2], dim=1)
+    asked = torch.norm(command[:, :2], dim=1) + torch.abs(command[:, 2])
+    shortfall = torch.clamp((asked - speed) / torch.clamp(asked, min=1e-6), 0.0, 1.0)
+    return (asked > blocked_speed).float() * shortfall
+
+
+def wheel_ground_clearance(env, sensor_name="height_scanner", asset_cfg=None):
+    """[B, n_wheels] height of each wheel above the terrain beneath the robot.
+
+    The scanner reports how far the base origin sits above the terrain under each
+    ray, so a wheel's clearance is that distance plus how far the wheel hangs
+    relative to the base: both differences, so no world z and no terrain origin.
+    Returns None when the task has no scanner, which flat does not.
+    """
+    from mjlab.envs.mdp.observations import height_scan  # Lazy: keeps this pure.
+
+    try:
+        heights = height_scan(env, sensor_name, offset=0.0)
+    except KeyError:
+        return None
+    heights = torch.nan_to_num(heights, nan=0.0, posinf=0.0, neginf=0.0)
+    ground = torch.mean(heights, dim=1)
+    if asset_cfg is None:
+        raise ValueError(
+            "wheel_ground_clearance needs asset_cfg with body_names="
+            f"{_WHEEL_BODIES} so the body ids are resolved by the manager"
+        )
+    asset = env.scene[asset_cfg.name]
+    z = asset.data.body_link_pos_w[:, asset_cfg.body_ids, 2]
+    return ground.unsqueeze(-1) + (z - asset.data.root_link_pos_w[:, 2:3])
+
+
+def wheel_step_bonus(
+    env,
+    command_name="twist",
+    lift_height=WHEEL_STEP_LIFT_HEIGHT,
+    asset_cfg=None,
+):
+    """Pay for one wheel up and the other still rolling, while the robot is blocked.
+
+    Gated on being blocked, so on flat ground it pays nothing and cannot become the
+    old ``feet_air_time`` mistake of simply buying a lifted wheel. One wheel must be
+    clear of the terrain above ``lift_height`` and the other must still be down at
+    rolling height, which is the support that keeps a two-wheel machine upright; a
+    hop lifts both and earns nothing. Height comes from the scanner, so it holds on
+    any curriculum row.
+    """
+    clearance = wheel_ground_clearance(env, asset_cfg=asset_cfg)
+    if clearance is None:
+        return torch.zeros(env.num_envs, device=env.device)
+    lifted = (clearance > lift_height).float()
+    rolling = (clearance < WHEEL_ROLLING_CLEARANCE).float()
+    one_up = (lifted.sum(dim=1) == 1).float()
+    one_down = (rolling.sum(dim=1) >= 1).float()
+    return blocked_gate(env, command_name) * one_up * one_down
+
+
+def blocked_stall_cost(env, command_name="twist", cap=2.0):
+    """Charge for standing against something without getting anywhere.
+
+    Being blocked already forfeits the tracking reward, and the policy settled into
+    deadlocking anyway, so the deadlock itself is made negative and lifting a wheel
+    becomes the cheaper branch. Capped: once the obstacle is beyond the machine the
+    cost stops growing, because beyond that point it is a state the robot cannot act
+    on and an unbounded charge there is the club this project has already removed
+    twice.
+    """
+    blocked = blocked_gate(env, command_name)
+    seconds = getattr(env, "_blocked_seconds", None)
+    if seconds is None:
+        seconds = torch.zeros(env.num_envs, device=env.device)
+        env._blocked_seconds = seconds
+    seconds[env.episode_length_buf <= 1] = 0.0
+    env._blocked_seconds = torch.where(
+        blocked > 0.5, seconds + env.step_dt, torch.zeros_like(seconds)
+    )
+    return torch.clamp(env._blocked_seconds, max=cap)
+
+
 def body_level_error_recovery_scaled(env, scale=FALLEN_ATTEMPT_SCALE, **kwargs):
     """``body_level_error`` with the failed-fall allowance applied.
 

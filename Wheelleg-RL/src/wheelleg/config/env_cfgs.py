@@ -352,6 +352,18 @@ def _posture_contract(cfg, enforce_standing=True):
         if name in cfg.rewards:
             cfg.rewards[name].weight = weight
 
+    # Getting over an obstacle. Everything above removed a price; these two are the
+    # first terms that pay for the manoeuvre itself. One wheel up on the terrain with
+    # the other still rolling is the only supported way a two-wheel machine can step
+    # up, and it is only paid while the robot is blocked, so on flat ground it cannot
+    # become a reward for lifting wheels. The deadlock is charged alongside it so the
+    # choice is between the two, not between trying and nothing.
+    wheel_cfg = SceneEntityCfg("wheelleg", body_names=standing._WHEEL_BODIES)
+    cfg.rewards["wheel_step_bonus"] = RewardTermCfg(
+        func=standing.wheel_step_bonus, weight=3.0, params={"asset_cfg": wheel_cfg})
+    cfg.rewards["blocked_stall_cost"] = RewardTermCfg(
+        func=standing.blocked_stall_cost, weight=-1.5)
+
     return cfg
 
 
