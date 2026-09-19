@@ -216,7 +216,7 @@ def low_posture_locomotion(
 
 
 def standing_height_error(env, target_height=STANDING_CLEARANCE):
-    """Normalised squared deviation from the height the *commanded* posture wants.
+    """Squared deviation from the height the *commanded* posture wants.
 
     Always active, so a low posture is mildly discouraged and lying on the ground
     is expensive, without ever ending the episode. The standing target drops at
@@ -224,12 +224,19 @@ def standing_height_error(env, target_height=STANDING_CLEARANCE):
     target blends down to the folded body's rest height when lying down is
     commanded -- otherwise a folded robot would be punished for being low, which
     is exactly what it was told to be.
+
+    The error is normalised by the *standing* clearance, a constant, not by the
+    target. Normalising by the target is what a single fixed height target could
+    get away with, but the target now falls to the folded rest height of 2 mm:
+    dividing a 0.14 m discrepancy by 0.002 squares to over five thousand and the
+    penalty reached -7000 per episode, taking the value loss with it. A constant
+    denominator bounds the term at about 1 whatever the commanded posture.
     """
     from .posture import posture_height_target  # Local: posture pulls in mjlab.
 
     target = posture_height_target(env, effective_target_height(env, target_height))
     clearance = torch.clamp(base_clearance(env), min=0.0)
-    return torch.square((clearance - target) / target)
+    return torch.square((clearance - target) / STANDING_CLEARANCE)
 
 
 def body_tilt(env):

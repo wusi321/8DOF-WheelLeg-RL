@@ -246,6 +246,19 @@ class EnvironmentConfigTests(unittest.TestCase):
         self.assertLess(stance.clearance(thigh, knee, hip),
                         stance.clearance(*stance.NOMINAL_STANCE[1:]) - 0.10)
 
+    def test_height_error_is_not_normalised_by_a_target_that_can_go_to_zero(self):
+        """The posture target falls to the folded rest height of 2 mm.
+
+        Dividing the discrepancy by that target squared to over five thousand and
+        produced a -7000 per episode penalty with a matching value loss.
+        """
+        source = (root / "src/wheelleg/mdp/standing.py").read_text(encoding="utf-8")
+        self.assertIn("(clearance - target) / STANDING_CLEARANCE", source)
+        self.assertNotIn("(clearance - target) / target", source)
+        # The worst case must stay around 1, whatever the commanded posture.
+        worst = max(((0.145 - t) / 0.145) ** 2 for t in (0.002, 0.02, 0.073, 0.145))
+        self.assertLess(worst, 1.0)
+
     def test_crawl_penalty_dominates_velocity_tracking(self):
         """Travelling at 0.12 m must cost more than the tracking reward pays."""
         penalty_weight = 100.0
