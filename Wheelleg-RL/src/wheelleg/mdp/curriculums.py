@@ -329,7 +329,10 @@ def terrain_levels_vel_strict(
 
     episode_steps = env.episode_length_buf[env_ids].float()
     judged = episode_steps >= 0.5 * env.max_episode_length
-    ended_up = judged & (fallen_mask(env) < 0.5)
+    # Everything here is indexed by env_ids and has shape [len(env_ids)]. Anything
+    # read straight off the scene is fleet-shaped and must be indexed, or it
+    # broadcasts the whole fleet into a subset update.
+    ended_up = judged & (fallen_mask(env)[env_ids] < 0.5)
     if env.common_step_counter == 0:
         # The very first reset has no completed episode behind it -- the length
         # buffer still holds its randomized initial value and no distance has been
@@ -353,6 +356,18 @@ def terrain_levels_vel_strict(
         move_down = move_down & ~spawned_on_ground[env_ids].bool()
 
 
+
+    # The masks must be one entry per reset environment. A tensor read off the scene
+    # without being indexed by env_ids is fleet-shaped, and it broadcasts the whole
+    # fleet into a subset update: a crash when the shapes differ and silent
+    # corruption when they happen to be compatible. This check turns the first case
+    # into a message that names the cause.
+    if move_up.numel() != terrain.terrain_levels[env_ids].numel():
+        raise RuntimeError(
+            f"curriculum masks are {move_up.numel()} long but {env_ids.numel()} "
+            "environments were reset: something was read off the scene without "
+            "being indexed by env_ids"
+        )
 
     terrain.update_env_origins(env_ids, move_up, move_down)
 

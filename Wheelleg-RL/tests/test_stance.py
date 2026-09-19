@@ -508,7 +508,9 @@ class EnvironmentConfigTests(unittest.TestCase):
         # Partial episodes -- the randomized lengths at the start of a run -- must
         # not be judged, and a robot that fell on a row must not promote off it.
         self.assertIn("judged = episode_steps >= 0.5 * env.max_episode_length", source)
-        self.assertIn("ended_up = judged & (fallen_mask(env) < 0.5)", source)
+        self.assertIn("ended_up = judged & (fallen_mask(env)[env_ids] < 0.5)", source)
+        # A fleet-shaped tensor here broadcasts the fleet into a subset update.
+        self.assertIn("if move_up.numel() != terrain.terrain_levels[env_ids].numel():", source)
         self.assertNotIn("terrain_generator.size[0] / 2", source)
         self.assertNotIn("max_episode_length_s * 0.33", source)
         # Reverse-curriculum episodes travel nothing by design and must be excluded
