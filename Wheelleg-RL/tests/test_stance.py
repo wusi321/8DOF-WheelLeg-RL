@@ -179,6 +179,33 @@ class EnvironmentConfigTests(unittest.TestCase):
         # Reduced, never removed.
         self.assertIn("LEG_MOTION_RELIEF = 0.2", source)
 
+    def test_swing_clearance_is_measured_against_the_terrain_under_the_robot(self):
+        """No world z and no terrain origin: every term is a difference.
+
+        The scanner reports the base origin's height above the terrain beneath each
+        ray, so a wheel's clearance is that distance plus how far the wheel hangs
+        relative to the base. That is what makes the term survive a curriculum whose
+        rows sit at different heights.
+        """
+        source = (root / "src/wheelleg/mdp/standing.py").read_text(encoding="utf-8")
+        self.assertIn("def wheel_swing_clearance", source)
+        self.assertIn("heights = height_scan(env, sensor_name, offset=0.0)", source)
+        self.assertIn("ground = torch.mean(heights, dim=1)", source)
+        self.assertIn(
+            "clearance = ground.unsqueeze(-1) + (z - asset.data.root_link_pos_w[:, 2:3])",
+            source,
+        )
+        # Rolling wheels owe nothing; only a wheel that has left the ground is shaped.
+        self.assertIn("off_ground = (clearance > rolling).float()", source)
+        self.assertIn("* speed * off_ground", source)
+        # Silent without a command, and on a task with no scanner.
+        self.assertIn("return cost * (asked > command_threshold).float()", source)
+        self.assertIn("except KeyError:", source)
+        cfg = (root / "src/wheelleg/config/env_cfgs.py").read_text(encoding="utf-8")
+        self.assertIn("standing.wheel_swing_clearance", cfg)
+        # The module stays mjlab-free: it must not build a SceneEntityCfg itself.
+        self.assertNotIn("SceneEntityCfg(", source)
+
     def test_terrain_traversal_pays_where_tracking_has_gone_to_zero(self):
         """Gated on the command, not on movement: the funded seconds are the stuck ones."""
         source = (root / "src/wheelleg/mdp/standing.py").read_text(encoding="utf-8")

@@ -796,6 +796,67 @@ def terrain_level_bonus(env, command_name="twist", reference=MAX_TERRAIN_LEVEL,
     return torch.clamp(levels.float() / reference, 0.0, 1.0) * active
 
 
+WHEEL_ROLLING_CLEARANCE = 0.04
+"""Above this a wheel has left the ground rather than rolling on it, in metres.
+
+The wheel radius is 0.03, so a rolling axle sits one radius up; the margin keeps
+the contact patch's own compliance from counting as a lift.
+"""
+WHEEL_SWING_CLEARANCE = 0.06
+"""The height a wheel should reach when it does lift, in metres."""
+
+
+def wheel_swing_clearance(
+    env,
+    target_height=WHEEL_SWING_CLEARANCE,
+    rolling=WHEEL_ROLLING_CLEARANCE,
+    sensor_name="height_scanner",
+    command_name="twist",
+    command_threshold=0.1,
+    asset_cfg=None,
+):
+    """Penalise a wheel that left the ground without lifting to a usable height.
+
+    The reference 16DOF project shapes its swing with ``|foot_z - target| * speed``.
+    That does not transfer to a wheeled machine unchanged: a wheel spends most of
+    its time rolling, and a plain deviation cost would tax every wheel for sitting
+    at its own radius -- with a large speed -- and never distinguish a step. So the
+    cost is applied only once a wheel is actually off the ground. Below that it is
+    rolling and owes nothing; above it, a half-hearted lift that would only catch
+    on the edge of a step is charged, and so is a wild one.
+
+    Heights are measured against the terrain *under the robot*, not against world
+    z. The scanner reports how far the base origin sits above the terrain beneath
+    each ray, so a wheel's clearance is that distance plus how far the wheel hangs
+    relative to the base: both are differences, so neither world z nor the terrain
+    origin is needed, and the term is unaffected by which curriculum row the robot
+    happens to be standing on.
+    """
+    from mjlab.envs.mdp.observations import height_scan  # Lazy: keeps this pure.
+
+    try:
+        heights = height_scan(env, sensor_name, offset=0.0)
+    except KeyError:
+        # No scanner on this task (flat has none): nothing to measure against.
+        return torch.zeros(env.num_envs, device=env.device)
+    heights = torch.nan_to_num(heights, nan=0.0, posinf=0.0, neginf=0.0)
+    ground = torch.mean(heights, dim=1)
+    if asset_cfg is None:
+        raise ValueError(
+            "wheel_swing_clearance needs asset_cfg with body_names="
+            f"{_WHEEL_BODIES} so the body ids are resolved by the manager"
+        )
+    asset = env.scene[asset_cfg.name]
+    z = asset.data.body_link_pos_w[:, asset_cfg.body_ids, 2]
+    clearance = ground.unsqueeze(-1) + (z - asset.data.root_link_pos_w[:, 2:3])
+    speed = torch.norm(asset.data.body_link_vel_w[:, asset_cfg.body_ids, :2], dim=-1)
+    off_ground = (clearance > rolling).float()
+    cost = torch.mean(torch.abs(clearance - target_height) * speed * off_ground, dim=1)
+    command = env.command_manager.get_command(command_name)
+    asked = torch.norm(command[:, :2], dim=1) + torch.abs(command[:, 2])
+    return cost * (asked > command_threshold).float()
+
+
 def body_level_error_recovery_scaled(env, scale=FALLEN_ATTEMPT_SCALE, **kwargs):
     """``body_level_error`` with the failed-fall allowance applied.
 

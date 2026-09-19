@@ -271,6 +271,14 @@ def _posture_contract(cfg, enforce_standing=True):
         # be reached.
         cfg.rewards["terrain_level_bonus"] = RewardTermCfg(
             func=standing.terrain_level_bonus, weight=0.5)
+        # Swing shaping: a wheel that leaves the ground should reach a height it can
+        # actually use. Measured against the terrain under the robot, so it holds on
+        # every curriculum row. Silent on the flat task, which has no scanner.
+        cfg.rewards["wheel_swing_clearance"] = RewardTermCfg(
+            func=standing.wheel_swing_clearance,
+            weight=-1.0,
+            params={"asset_cfg": SceneEntityCfg(
+                "wheelleg", body_names=standing._WHEEL_BODIES)})
         if "joint_pos_limits" in cfg.rewards:
             cfg.rewards["joint_pos_limits"] = RewardTermCfg(
                 func=standing.joint_pos_limits_fallen_scaled,
