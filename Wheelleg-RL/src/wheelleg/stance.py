@@ -281,3 +281,27 @@ def leg_joint_positions(pose) -> tuple[float, float, float, float, float, float]
     """
     hip, thigh, knee = pose
     return (hip * HIP_MIRROR[0], thigh, knee, hip * HIP_MIRROR[1], thigh, knee)
+
+
+# ---------------------------------------------------------------------------
+# What one unit of leg action is worth, in radians.
+#
+# The command is ``target = offset + action * scale``, so the scale is how far
+# the policy can move a joint. It used to be 0.125 rad for the hip and 0.25 for
+# the thigh and knee, which with a policy standard deviation around 0.4 gave the
+# knee a one-sigma excursion under 0.1 rad. Two things followed from that: the
+# hips and knees visibly hardly moved, so the machine could not adapt to uneven
+# ground or step sideways, and it could not hold its pitch against the reaction
+# torque of accelerating, so it leaned back whenever it sped up.
+#
+# A quarter of the joint's whole travel per unit action lets a two-sigma action
+# reach half the range, which is the motion the terrain and the lateral steps
+# need while still leaving the policy a reason to keep its actions small.
+# ---------------------------------------------------------------------------
+ACTION_RANGE_FRACTION = 0.25
+
+LEG_ACTION_SCALE = {
+    "hip": ACTION_RANGE_FRACTION * (HIP_LIMIT[1] - HIP_LIMIT[0]),
+    "thigh": ACTION_RANGE_FRACTION * (THIGH_LIMIT[1] - THIGH_LIMIT[0]),
+    "knee": ACTION_RANGE_FRACTION * (KNEE_LIMIT[1] - KNEE_LIMIT[0]),
+}

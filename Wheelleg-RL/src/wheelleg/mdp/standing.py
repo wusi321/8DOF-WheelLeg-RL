@@ -705,6 +705,40 @@ def body_level_error_recovery_scaled(env, scale=FALLEN_ATTEMPT_SCALE, **kwargs):
     return body_level_error(env, **kwargs) * recovery_scale(env, scale)
 
 
+# ---------------------------------------------------------------------------
+# Velocity tracking, withdrawn unless the robot can actually travel.
+#
+# Every travelling *penalty* is suspended once the robot is down, so the tracking
+# reward was the only thing still paying there: a machine dragging itself along
+# on its belly collected it, which is how crawling became a stable policy. Gating
+# the payment rather than adding a crawl penalty is what keeps a robot that is
+# wriggling without translating -- which is what standing up looks like from the
+# outside -- from being charged anything for it. The robot's only income while
+# down is then the recovery bounty, and the moment it is up and standing the
+# command pays again, so getting up is followed by walking rather than by lying
+# back down.
+# ---------------------------------------------------------------------------
+def track_linear_velocity_x_standing(env, std, command_name="twist"):
+    """``track_linear_velocity_x``, gated on being up and told to stand."""
+    from .rewards import track_linear_velocity_x
+
+    return track_linear_velocity_x(env, std, command_name) * gait_gate(env)
+
+
+def track_linear_velocity_y_standing(env, std, command_name="twist"):
+    """``track_linear_velocity_y``, gated on being up and told to stand."""
+    from .rewards import track_linear_velocity_y
+
+    return track_linear_velocity_y(env, std, command_name) * gait_gate(env)
+
+
+def track_angular_velocity_z_standing(env, std, command_name="twist"):
+    """``track_angular_velocity_z``, gated on being up and told to stand."""
+    from .rewards import track_angular_velocity_z
+
+    return track_angular_velocity_z(env, std, command_name) * gait_gate(env)
+
+
 # Reverse-curriculum spawn states. The poses and their rest heights are geometry,
 # so they live in ``wheelleg.stance`` next to the nominal stance; they are
 # imported above and re-exported here for the task config.
@@ -715,7 +749,7 @@ def spawn_fallen_state(
     env,
     env_ids=None,
     folded_probability=0.35,
-    crouch_probability=0.15,
+    crouch_probability=0.0,
     folded_hold_probability=0.5,
     asset_cfg=None,
 ):

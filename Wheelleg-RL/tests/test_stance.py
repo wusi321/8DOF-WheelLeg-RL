@@ -260,6 +260,50 @@ class EnvironmentConfigTests(unittest.TestCase):
         self.assertIn("def _update_command", posture)
         self.assertIn("torch.clamp(self._target - self.alpha, -step, step)", posture)
 
+    def test_leg_action_scale_covers_a_usable_fraction_of_travel(self):
+        """At 0.125/0.25 rad the knee's whole one-sigma action was under 0.1 rad."""
+        for kind, limits in (
+            ("hip", stance.HIP_LIMIT),
+            ("thigh", stance.THIGH_LIMIT),
+            ("knee", stance.KNEE_LIMIT),
+        ):
+            span = limits[1] - limits[0]
+            self.assertAlmostEqual(
+                stance.LEG_ACTION_SCALE[kind],
+                stance.ACTION_RANGE_FRACTION * span,
+                places=12,
+            )
+            # Floor: one unit of action must be worth a fifth of the travel, or
+            # the legs cannot adapt to terrain or hold pitch under acceleration.
+            self.assertGreater(stance.LEG_ACTION_SCALE[kind], 0.2 * span)
+
+    def test_the_half_crouch_is_neither_commanded_nor_spawned(self):
+        """Its wheel sat forward of the body, so rolling in it tipped the robot over."""
+        cfg = (root / "src/wheelleg/config/env_cfgs.py").read_text(encoding="utf-8")
+        self.assertIn('"crouch_probability": 0.0,', cfg)
+        posture = (root / "src/wheelleg/mdp/posture.py").read_text(encoding="utf-8")
+        self.assertNotIn("folded_fraction", posture)
+        # Standing is the only command a running episode issues; the folded pose
+        # can only arrive from a spawn.
+        self.assertIn("value = torch.ones(len(env_ids), device=self.device)", posture)
+
+    def test_tracking_is_withdrawn_while_the_robot_cannot_travel(self):
+        """Otherwise a belly-drag is the one thing still getting paid."""
+        cfg = (root / "src/wheelleg/config/env_cfgs.py").read_text(encoding="utf-8")
+        for name in (
+            "standing.track_linear_velocity_x_standing",
+            "standing.track_linear_velocity_y_standing",
+            "standing.track_angular_velocity_z_standing",
+        ):
+            self.assertIn(name, cfg)
+        source = (root / "src/wheelleg/mdp/standing.py").read_text(encoding="utf-8")
+        for fn in (
+            "track_linear_velocity_x",
+            "track_linear_velocity_y",
+            "track_angular_velocity_z",
+        ):
+            self.assertIn(f"return {fn}(env, std, command_name) * gait_gate(env)", source)
+
     def test_terrain_difficulty_never_starts_at_zero(self):
         """Difficulty 0 makes obstacle terrains literally flat."""
         source = (root / "src/wheelleg/config/env_cfgs.py").read_text(encoding="utf-8")

@@ -2,7 +2,7 @@
 from .base_env_cfg import *
 from .base_env_cfg import flat_env_cfg as _base_flat_env_cfg, rough_env_cfg as _base_rough_env_cfg
 from ..robot_cfg import get_robot_cfg
-from ..stance import MIN_CLEARANCE, STANDING_CLEARANCE
+from ..stance import LEG_ACTION_SCALE, MIN_CLEARANCE, STANDING_CLEARANCE
 from ..mdp import standing
 from ..mdp.curriculums import PathLength
 from ..mdp.lowpass_actions import PostureOffsetPositionActionCfg
@@ -12,8 +12,8 @@ from ..mdp.posture import POSTURE_COMMAND_NAME, PostureCommandCfg, posture_pose_
 def _posture_command(cfg):
     """Add the commanded posture and make the leg action follow it.
 
-    The leg action is a delta from the standing stance, with a scale of 0.125 rad
-    for the hip and 0.25 for the thigh and knee, so commanding the folded pose
+    The leg action is a delta from the standing stance. With the raised action
+    scale a quarter of each joint's travel, so commanding the folded pose
     from there needs raw actions of +7.26 / -5.55 against an initial action std
     of 0.80. The policy therefore cannot choose to fold, and a folded spawn only
     lasts until the actuators drag the legs back to the stance. With the offset
@@ -22,9 +22,7 @@ def _posture_command(cfg):
     """
     cfg.commands[POSTURE_COMMAND_NAME] = PostureCommandCfg(
         resampling_time_range=(5.0, 10.0),
-        folded_fraction=0.30,
-        standing_fraction=0.45,
-        transition_rate=2.0,
+        transition_rate=1.0,
     )
     # The actor must see the command: it cannot observe its own height, so a
     # posture that depended on state alone would be invisible to the policy.
@@ -37,7 +35,12 @@ def _posture_command(cfg):
         entity_name="wheelleg",
         actuator_names=("(left|right)_hip_joint", "(left|right)_thigh_joint",
                         "(left|right)_knee_joint"),
-        scale={".*_hip_joint": 0.125, "^(?!.*_hip_joint).*": 0.25},
+        # A quarter of each joint's travel per unit action. The old 0.125/0.25 rad
+        # gave the knee a one-sigma excursion under 0.1 rad: the hips and knees
+        # hardly moved, the machine could not adapt to uneven ground or step
+        # sideways, and it could not hold its pitch against the reaction torque of
+        # accelerating, so it leaned back whenever it sped up.
+        scale={f".*_{kind}_joint": value for kind, value in LEG_ACTION_SCALE.items()},
         use_default_offset=True,
         control_frequency=50.0, cut_off_frequency=5.0,
         min_delay=0, max_delay=2,
@@ -94,7 +97,7 @@ def _posture_contract(cfg, enforce_standing=True):
         mode="reset",
         params={
             "folded_probability": 0.35,
-            "crouch_probability": 0.15,
+            "crouch_probability": 0.0,
             "folded_hold_probability": 0.5,
             "asset_cfg": SceneEntityCfg("wheelleg"),
         },
@@ -220,10 +223,28 @@ def _posture_contract(cfg, enforce_standing=True):
         # Attempt taxes: reduced, not removed, while the robot is down. The folded
         # pose sits on the hip and thigh hard limits, so an unscaled joint-limit
         # penalty would charge the robot for adopting the pose it must stand from.
+        # Velocity tracking pays nothing unless the robot is up and told to stand.
+        # Every travelling penalty is suspended while it is down, so this reward
+        # was the one thing still paying there and a belly-drag collected it.
+        for name, func in (
+            ("track_lin_vel_x_exp", standing.track_linear_velocity_x_standing),
+            ("track_lin_vel_y_exp", standing.track_linear_velocity_y_standing),
+            ("track_ang_vel_z_exp", standing.track_angular_velocity_z_standing),
+        ):
+            if name in cfg.rewards:
+                cfg.rewards[name] = RewardTermCfg(
+                    func=func,
+                    weight=cfg.rewards[name].weight,
+                    params=dict(cfg.rewards[name].params),
+                )
         scale = standing.FALLEN_ATTEMPT_SCALE
+        # Jitter. These were negligible next to the tilt club that used to dominate
+        # the economy (-0.4 an episode against -52); with that gone they are what
+        # actually asks for a smooth joint trajectory. Both still scale down to
+        # 0.1 while the robot is down, so they never price a recovery attempt.
         cfg.rewards["action_rate"] = RewardTermCfg(
             func=standing.action_rate_fallen_scaled,
-            weight=cfg.rewards["action_rate"].weight if "action_rate" in cfg.rewards else -0.01,
+            weight=-0.045,
             params={"scale": scale})
         leg_names = ("(left|right)_hip_joint", "(left|right)_thigh_joint",
                      "(left|right)_knee_joint")
@@ -237,7 +258,7 @@ def _posture_contract(cfg, enforce_standing=True):
         if "leg_joint_acc_l2" in cfg.rewards:
             cfg.rewards["leg_joint_acc_l2"] = RewardTermCfg(
                 func=standing.joint_acc_fallen_scaled,
-                weight=cfg.rewards["leg_joint_acc_l2"].weight,
+                weight=-1.0e-6,
                 params={"asset_cfg": SceneEntityCfg("wheelleg", joint_names=leg_names),
                         "scale": scale})
         if "joint_pos_limits" in cfg.rewards:

@@ -44,22 +44,21 @@ STANDING_ALPHA = 1.0
 
 @dataclass(kw_only=True)
 class PostureCommandCfg(CommandTermCfg):
-  """Samples a commanded body posture, held for the resampling interval.
+  """Samples a commanded body posture, held until it is resampled.
 
-  ``folded_fraction`` and ``standing_fraction`` force that share of environments
-  to the two extremes, because sampling alpha uniformly almost never produces
-  either end and both are the states that actually have to be learned. The rest
-  are uniform in between, which is the richer part of the curriculum: the way up
-  from lying flat is a path the policy has to discover.
+  Standing is the only command a running episode ever issues. The folded pose is
+  a *reset* condition instead -- the spawn mix decides how many episodes begin on
+  the ground -- because lying down is not a locomotion task: issuing it to a
+  walking robot interrupts it and makes it fall on purpose, and moving while
+  folded is the crawl this task exists to avoid.
 
-  The standing share is the larger one: balance and travel are what the machine
-  is for, and a command mix that spends most of its time on the ground starves
-  the walking data the rest of the reward is written for.
+  The half-crouch that used to sit between the two ends is gone as well. It was
+  the arithmetic midpoint of the two stances, never solved for axle position, so
+  its wheel sat forward of the body and rolling in it tipped the machine onto its
+  back; both ends of the range are poses the geometry was actually solved for.
   """
 
-  folded_fraction: float = 0.30
-  standing_fraction: float = 0.45
-  transition_rate: float = 2.0
+  transition_rate: float = 1.0
   """How fast the commanded posture may travel, in alpha per second."""
 
   def build(self, env) -> PostureCommand:
@@ -92,22 +91,16 @@ class PostureCommand(CommandTerm):
     self.metrics["posture_alpha"] = self.alpha
 
   def _resample_command(self, env_ids: torch.Tensor) -> None:
-    count = len(env_ids)
-    draw = torch.rand(count, device=self.device)
-    folded = draw < self.cfg.folded_fraction
-    standing = draw >= 1.0 - self.cfg.standing_fraction
-    value = torch.rand(count, device=self.device)
-    value = torch.where(folded, torch.zeros_like(value), value)
-    value = torch.where(standing, torch.ones_like(value), value)
-
-    # The pose an environment was just spawned in decides its first command. The
-    # event manager runs before this term inside ``_reset_idx``, so a spawn can
-    # leave the posture its pose implies; without that coupling the two are drawn
-    # independently and a standing spawn is handed a folded command about two
-    # times in three, at which point the action offset drags its legs out from
-    # under it on the very first step. That is a guaranteed face-plant, and it
+    # Standing is the default and the only command a running episode issues; the
+    # folded pose can only arrive from a spawn. The pose an environment was just
+    # spawned in therefore decides its first command, which the event manager
+    # leaves behind because it runs before this term inside ``_reset_idx``.
+    # Without that coupling the two are drawn independently and a standing spawn
+    # is handed a folded command, at which point the action offset drags its legs
+    # out from under it on the very first step: a guaranteed face-plant that
     # taught the policy that standing is hopeless. The flag is consumed here so
     # later resamples mid-episode are free again.
+    value = torch.ones(len(env_ids), device=self.device)
     forced = getattr(self._env, "_spawn_posture", None)
     if forced is not None:
       override = forced[env_ids]
