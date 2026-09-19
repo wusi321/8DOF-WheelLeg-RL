@@ -260,8 +260,15 @@ class EnvironmentConfigTests(unittest.TestCase):
         self.assertIn("def _update_command", posture)
         self.assertIn("torch.clamp(self._target - self.alpha, -step, step)", posture)
 
-    def test_leg_action_scale_covers_a_usable_fraction_of_travel(self):
-        """At 0.125/0.25 rad the knee's whole one-sigma action was under 0.1 rad."""
+    def test_leg_action_scale_stays_in_a_usable_band(self):
+        """Small enough not to open the policy in a falling regime, large enough to act.
+
+        At 0.125/0.25 rad the knee's whole one-sigma action was under 0.1 rad. At a
+        quarter of the travel the initial exploration amplitude threw the machine
+        over, the policy learned that large actions fall, and the standard deviation
+        collapsed from 0.37 to 0.15. Both ends are now guarded: the scale is exactly
+        a fraction of the travel, and that fraction stays between 8% and 20% of it.
+        """
         for kind, limits in (
             ("hip", stance.HIP_LIMIT),
             ("thigh", stance.THIGH_LIMIT),
@@ -273,36 +280,47 @@ class EnvironmentConfigTests(unittest.TestCase):
                 stance.ACTION_RANGE_FRACTION * span,
                 places=12,
             )
-            # Floor: one unit of action must be worth a fifth of the travel, or
-            # the legs cannot adapt to terrain or hold pitch under acceleration.
-            self.assertGreater(stance.LEG_ACTION_SCALE[kind], 0.2 * span)
+            self.assertGreater(stance.LEG_ACTION_SCALE[kind], 0.08 * span)
+            self.assertLessEqual(stance.LEG_ACTION_SCALE[kind], 0.20 * span)
 
-    def test_the_half_crouch_is_neither_commanded_nor_spawned(self):
-        """Its wheel sat forward of the body, so rolling in it tipped the robot over."""
+    def test_the_half_crouch_is_not_a_posture_but_is_still_a_spawn(self):
+        """Holding a half-crouch and rolling in it tipped the robot onto its back.
+
+        That was the arithmetic midpoint of the two stances, never solved for axle
+        position, so its wheel sat forward of the body. It is no longer reachable
+        as a command -- alpha is binary and standing is the only posture a running
+        episode is given -- but starting halfway up is still a valid mid-recovery
+        spawn, so the probability stays.
+        """
         cfg = (root / "src/wheelleg/config/env_cfgs.py").read_text(encoding="utf-8")
-        self.assertIn('"crouch_probability": 0.0,', cfg)
+        self.assertIn('"crouch_probability": 0.15,', cfg)
         posture = (root / "src/wheelleg/mdp/posture.py").read_text(encoding="utf-8")
         self.assertNotIn("folded_fraction", posture)
         # Standing is the only command a running episode issues; the folded pose
         # can only arrive from a spawn.
         self.assertIn("value = torch.ones(len(env_ids), device=self.device)", posture)
 
-    def test_tracking_is_withdrawn_while_the_robot_cannot_travel(self):
-        """Otherwise a belly-drag is the one thing still getting paid."""
-        cfg = (root / "src/wheelleg/config/env_cfgs.py").read_text(encoding="utf-8")
-        for name in (
-            "standing.track_linear_velocity_x_standing",
-            "standing.track_linear_velocity_y_standing",
-            "standing.track_angular_velocity_z_standing",
-        ):
-            self.assertIn(name, cfg)
+    def test_tracking_is_gated_on_clearance_not_on_tilt(self):
+        """Gating on tilt withdrew the walking payment precisely while walking.
+
+        A robot rolling with the body leaning forty degrees is still travelling.
+        The run that used the tilt-inclusive gate averaged sixty degrees of lean,
+        so the payment was off most of the time, walking reward fell away exactly
+        when the robot walked, and the standard deviation collapsed.
+        """
         source = (root / "src/wheelleg/mdp/standing.py").read_text(encoding="utf-8")
+        self.assertIn("def grounded_gate", source)
+        self.assertIn("return (base_clearance(env) > clearance_gate).float()", source)
         for fn in (
             "track_linear_velocity_x",
             "track_linear_velocity_y",
             "track_angular_velocity_z",
         ):
-            self.assertIn(f"return {fn}(env, std, command_name) * gait_gate(env)", source)
+            self.assertIn(
+                f"return {fn}(env, std, command_name) * grounded_gate(env)", source
+            )
+        # And the tilt-inclusive gate must not be what pays the tracking reward.
+        self.assertNotIn("env, std, command_name) * gait_gate(env)", source)
 
     def test_terrain_difficulty_never_starts_at_zero(self):
         """Difficulty 0 makes obstacle terrains literally flat."""

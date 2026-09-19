@@ -97,7 +97,7 @@ def _posture_contract(cfg, enforce_standing=True):
         mode="reset",
         params={
             "folded_probability": 0.35,
-            "crouch_probability": 0.0,
+            "crouch_probability": 0.15,
             "folded_hold_probability": 0.5,
             "asset_cfg": SceneEntityCfg("wheelleg"),
         },

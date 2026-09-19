@@ -705,38 +705,52 @@ def body_level_error_recovery_scaled(env, scale=FALLEN_ATTEMPT_SCALE, **kwargs):
     return body_level_error(env, **kwargs) * recovery_scale(env, scale)
 
 
+def grounded_gate(env, clearance_gate=FALLEN_CLEARANCE):
+    """1 while the body is clear of the ground, 0 while it rests on it.
+
+    Deliberately *not* the fallen mask. That one also fires on tilt, and a robot
+    rolling along on its wheels with the body leaning forty degrees is still
+    travelling. Gating the tracking payment on tilt as well switched the reward
+    off for most of a run whose mean body lean was sixty degrees: it withdrew the
+    walking payment precisely while the robot was walking, so the policy walked
+    less, leaned more, and the standard deviation collapsed from 0.37 to 0.15.
+    This gate is about the belly being on the ground, which is the one thing the
+    payment must not reward.
+    """
+    return (base_clearance(env) > clearance_gate).float()
+
+
 # ---------------------------------------------------------------------------
-# Velocity tracking, withdrawn unless the robot can actually travel.
+# Velocity tracking, withdrawn while the body is on the ground.
 #
-# Every travelling *penalty* is suspended once the robot is down, so the tracking
-# reward was the only thing still paying there: a machine dragging itself along
-# on its belly collected it, which is how crawling became a stable policy. Gating
-# the payment rather than adding a crawl penalty is what keeps a robot that is
-# wriggling without translating -- which is what standing up looks like from the
-# outside -- from being charged anything for it. The robot's only income while
-# down is then the recovery bounty, and the moment it is up and standing the
-# command pays again, so getting up is followed by walking rather than by lying
-# back down.
+# A machine dragging itself along on its belly collected the tracking reward,
+# because every travelling *penalty* is suspended once it is down, so tracking
+# was the one thing still paying there. Gating the payment rather than adding a
+# crawl penalty is what leaves a robot that is wriggling without translating --
+# which is what standing up looks like from the outside -- charged nothing. The
+# robot's only income while down is then the recovery bounty, and the moment it
+# is up on its wheels the command pays again, so getting up is followed by
+# walking rather than by lying back down.
 # ---------------------------------------------------------------------------
 def track_linear_velocity_x_standing(env, std, command_name="twist"):
-    """``track_linear_velocity_x``, gated on being up and told to stand."""
+    """``track_linear_velocity_x``, withdrawn while the body is on the ground."""
     from .rewards import track_linear_velocity_x
 
-    return track_linear_velocity_x(env, std, command_name) * gait_gate(env)
+    return track_linear_velocity_x(env, std, command_name) * grounded_gate(env)
 
 
 def track_linear_velocity_y_standing(env, std, command_name="twist"):
-    """``track_linear_velocity_y``, gated on being up and told to stand."""
+    """``track_linear_velocity_y``, withdrawn while the body is on the ground."""
     from .rewards import track_linear_velocity_y
 
-    return track_linear_velocity_y(env, std, command_name) * gait_gate(env)
+    return track_linear_velocity_y(env, std, command_name) * grounded_gate(env)
 
 
 def track_angular_velocity_z_standing(env, std, command_name="twist"):
-    """``track_angular_velocity_z``, gated on being up and told to stand."""
+    """``track_angular_velocity_z``, withdrawn while the body is on the ground."""
     from .rewards import track_angular_velocity_z
 
-    return track_angular_velocity_z(env, std, command_name) * gait_gate(env)
+    return track_angular_velocity_z(env, std, command_name) * grounded_gate(env)
 
 
 # Reverse-curriculum spawn states. The poses and their rest heights are geometry,

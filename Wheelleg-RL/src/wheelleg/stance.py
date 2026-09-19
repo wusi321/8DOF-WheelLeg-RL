@@ -287,18 +287,25 @@ def leg_joint_positions(pose) -> tuple[float, float, float, float, float, float]
 # What one unit of leg action is worth, in radians.
 #
 # The command is ``target = offset + action * scale``, so the scale is how far
-# the policy can move a joint. It used to be 0.125 rad for the hip and 0.25 for
-# the thigh and knee, which with a policy standard deviation around 0.4 gave the
-# knee a one-sigma excursion under 0.1 rad. Two things followed from that: the
-# hips and knees visibly hardly moved, so the machine could not adapt to uneven
-# ground or step sideways, and it could not hold its pitch against the reaction
-# torque of accelerating, so it leaned back whenever it sped up.
+# the policy can move a joint. It was 0.125 rad for the hip and 0.25 for the
+# thigh and knee, which with a policy standard deviation around 0.4 gave the knee
+# a one-sigma excursion under 0.1 rad, and the hips and knees visibly hardly
+# moved.
 #
-# A quarter of the joint's whole travel per unit action lets a two-sigma action
-# reach half the range, which is the motion the terrain and the lateral steps
-# need while still leaving the policy a reason to keep its actions small.
+# Raising it to a quarter of the travel fixed nothing and broke the run. Starting
+# exploration at that amplitude -- a hip excursion of +-0.36 rad at the initial
+# standard deviation -- threw the machine over on the first steps, so the policy
+# learned that large actions fall and drove its standard deviation from 0.37 down
+# to 0.15. A near-deterministic policy with near-zero actions leaves the legs as a
+# rigid brace: terrain levels stopped advancing, tracking collapsed, and the body
+# leaned further, not less. The small scale was never why the legs were quiet.
+#
+# 0.12 keeps a real increase in authority -- 1.7x the hip, 1.3x the knee -- without
+# starting the policy in a regime where every large action is punished. If the
+# standard deviation collapses again, this is the first number to lower, and the
+# original 0.125/0.25 is a known-good fallback.
 # ---------------------------------------------------------------------------
-ACTION_RANGE_FRACTION = 0.25
+ACTION_RANGE_FRACTION = 0.12
 
 LEG_ACTION_SCALE = {
     "hip": ACTION_RANGE_FRACTION * (HIP_LIMIT[1] - HIP_LIMIT[0]),
