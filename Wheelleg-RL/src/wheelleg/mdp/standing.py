@@ -73,9 +73,14 @@ FORWARD_LEAN_ALLOWANCE = 0.30  # rad, about 17 degrees
 BACKWARD_LEAN_SCALE = 1.5
 MAX_TILT_COST = 0.6  # rad, about 34 degrees
 
-# How far the body may tip before it counts as fallen. The recovery deadline is
-# set per fall in the recovery section below.
-DOWN_TILT_LIMIT = 0.9  # rad, about 52 degrees
+# Fallen gates: tilt OR height, not body contact, because the box chassis can
+# wedge on a side without the body sensor firing. There is exactly one such
+# definition in this module: it decides what counts as fallen for the recovery
+# rewards, for the standing-up deadline, and for suspending the gait penalties.
+# Using two different definitions was a real bug -- a robot that was fallen by
+# height but not by tilt kept paying the full crawl penalty while down.
+FALLEN_TILT = 0.70  # rad, about 40 degrees
+FALLEN_CLEARANCE = 0.08  # m
 
 # Sideways speed that counts as genuinely translating sideways rather than
 # merely rotating, used by the lateral step reward.
@@ -128,12 +133,16 @@ def total_tilt(env):
     return torch.acos(torch.clamp(-gravity_z, -1.0, 1.0))
 
 
-def is_down(env, tilt_limit=DOWN_TILT_LIMIT):
-    """True when the robot has fallen: badly tilted, or the body on the ground."""
-    return (total_tilt(env) > tilt_limit) | base_ground_contact(env)
+def is_down(env, tilt_limit=FALLEN_TILT, clearance_gate=FALLEN_CLEARANCE):
+    """True when the robot has fallen.
+
+    The single definition, shared by the gait-penalty suspension and the recovery
+    terms: badly tilted, or too low.
+    """
+    return fallen_mask(env, tilt_limit, clearance_gate).bool()
 
 
-def upright_gate(env, tilt_limit=DOWN_TILT_LIMIT):
+def upright_gate(env, tilt_limit=FALLEN_TILT, clearance_gate=FALLEN_CLEARANCE):
     """1 while the robot is up, 0 once it is down.
 
     The posture rewards exist to shape a *gait*: they must stop applying once the
@@ -142,7 +151,7 @@ def upright_gate(env, tilt_limit=DOWN_TILT_LIMIT):
     episode returns ran to -390, the value loss blew up and the policy collapsed
     to a near-deterministic "stay down" behaviour it could not explore out of.
     """
-    return (~is_down(env, tilt_limit)).float()
+    return (~is_down(env, tilt_limit, clearance_gate)).float()
 
 
 def crouch_gate(env, reference=CROUCH_SPEED_REFERENCE):
@@ -286,16 +295,8 @@ def base_ground_contact_cost(env):
     It is here to discourage travelling on the belly, not to add a second charge
     for being on the ground; the height error and the tilt cost already cover that.
     """
-    return base_ground_contact(env).float() * _not_down_ignoring_base_contact(env)
-
-
-def _not_down_ignoring_base_contact(env, tilt_limit=DOWN_TILT_LIMIT):
-    """Upright gate that only looks at tilt.
-
-    ``is_down`` ORs in body contact, so it cannot be reused inside the body
-    contact term itself or the term would always switch itself off.
-    """
-    return (total_tilt(env) <= tilt_limit).float()
+    tilted = total_tilt(env) > FALLEN_TILT
+    return base_ground_contact(env).float() * (~tilted).float()
 
 
 def wheel_air_time(env, sensor_name="feet_ground_contact"):
@@ -432,8 +433,7 @@ def lateral_step_reward(
 
 # Fallen gates, in the spirit of the reference: tilt OR height, not body contact,
 # because the box chassis can wedge on a side without the body sensor firing.
-FALLEN_TILT = 0.70  # rad, about 40 degrees
-FALLEN_CLEARANCE = 0.08  # m
+# The single definition lives with the other thresholds at the top of the module.
 # "Recovered": the reference used 25 degrees and a height it knew was reachable.
 RECOVERED_TILT = 0.44  # rad, about 25 degrees
 RECOVERED_CLEARANCE = 0.11  # m, 76% of the standing clearance
