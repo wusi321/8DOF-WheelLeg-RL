@@ -240,27 +240,37 @@ def _posture_contract(cfg, enforce_standing=True):
         scale = standing.FALLEN_ATTEMPT_SCALE
         # Jitter. These were negligible next to the tilt club that used to dominate
         # the economy (-0.4 an episode against -52); with that gone they are what
-        # actually asks for a smooth joint trajectory. Both still scale down to
-        # 0.1 while the robot is down, so they never price a recovery attempt.
+        # actually asks for a smooth joint trajectory. Both stand down while the
+        # legs are being worked hard -- see standing.leg_motion_scale -- because
+        # charged in full while the robot is pushing against a step they make
+        # "keep the wheels down" cheaper than "stop and lift one", and a machine
+        # that never lifts a wheel never climbs.
         cfg.rewards["action_rate"] = RewardTermCfg(
-            func=standing.action_rate_fallen_scaled,
+            func=standing.action_rate_motion_relieved,
             weight=-0.045,
-            params={"scale": scale})
+            params={"scale": standing.LEG_MOTION_RELIEF})
         leg_names = ("(left|right)_hip_joint", "(left|right)_thigh_joint",
                      "(left|right)_knee_joint")
         # Flat carries one joint-acceleration term over every joint; rough pops it
         # for split leg and wheel terms. Scale whichever this task has.
         if "joint_acc" in cfg.rewards:
             cfg.rewards["joint_acc"] = RewardTermCfg(
-                func=standing.joint_acc_fallen_scaled,
+                func=standing.joint_acc_motion_relieved,
                 weight=cfg.rewards["joint_acc"].weight,
-                params={"asset_cfg": SceneEntityCfg("wheelleg"), "scale": scale})
+                params={"asset_cfg": SceneEntityCfg("wheelleg"),
+                        "scale": standing.LEG_MOTION_RELIEF})
         if "leg_joint_acc_l2" in cfg.rewards:
             cfg.rewards["leg_joint_acc_l2"] = RewardTermCfg(
-                func=standing.joint_acc_fallen_scaled,
+                func=standing.joint_acc_motion_relieved,
                 weight=-1.0e-6,
                 params={"asset_cfg": SceneEntityCfg("wheelleg", joint_names=leg_names),
-                        "scale": scale})
+                        "scale": standing.LEG_MOTION_RELIEF})
+        # A little for travelling a hard terrain row, gated on actually moving.
+        # This is what pays during the seconds spent working at an obstacle, where
+        # the tracking reward is already zero because the commanded speed cannot
+        # be reached.
+        cfg.rewards["terrain_level_bonus"] = RewardTermCfg(
+            func=standing.terrain_level_bonus, weight=0.5)
         if "joint_pos_limits" in cfg.rewards:
             cfg.rewards["joint_pos_limits"] = RewardTermCfg(
                 func=standing.joint_pos_limits_fallen_scaled,

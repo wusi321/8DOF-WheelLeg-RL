@@ -152,15 +152,44 @@ class EnvironmentConfigTests(unittest.TestCase):
     def test_attempt_taxes_are_scaled_while_fallen(self):
         source = (root / "src/wheelleg/mdp/standing.py").read_text(encoding="utf-8")
         self.assertIn("def attempt_scale", source)
-        for name in ("action_rate_fallen_scaled", "joint_acc_fallen_scaled",
+        for name in ("action_rate_motion_relieved", "joint_acc_motion_relieved",
                      "joint_pos_limits_fallen_scaled"):
             self.assertIn(f"def {name}", source)
         cfg = (root / "src/wheelleg/config/env_cfgs.py").read_text(encoding="utf-8")
-        for name in ("standing.action_rate_fallen_scaled",
+        for name in ("standing.action_rate_motion_relieved",
+                     "standing.joint_acc_motion_relieved",
                      "standing.joint_pos_limits_fallen_scaled",
                      "standing.fallen_tax", "standing.recovery_success",
                      "standing.upright_progress", "standing.height_progress"):
             self.assertIn(name, cfg)
+
+    def test_leg_motion_taxes_stand_down_when_a_wheel_has_to_lift(self):
+        """Charged in full at a step, the cheapest policy is never to lift a wheel.
+
+        Play showed the legs not moving at all when the robot was blocked. The
+        relief must key on the commanded-but-unachieved speed, which is what being
+        blocked looks like, and it must never reach zero -- reduced, not removed,
+        or thrashing works on the flat too.
+        """
+        source = (root / "src/wheelleg/mdp/standing.py").read_text(encoding="utf-8")
+        self.assertIn("def leg_motion_scale", source)
+        self.assertIn("blocked = (asked > blocked_speed).float() * shortfall", source)
+        self.assertIn("relax = torch.maximum(", source)
+        self.assertIn("return 1.0 - (1.0 - scale) * relax", source)
+        # Reduced, never removed.
+        self.assertIn("LEG_MOTION_RELIEF = 0.2", source)
+
+    def test_terrain_traversal_pays_where_tracking_has_gone_to_zero(self):
+        """Gated on the command, not on movement: the funded seconds are the stuck ones."""
+        source = (root / "src/wheelleg/mdp/standing.py").read_text(encoding="utf-8")
+        self.assertIn("def terrain_level_bonus", source)
+        self.assertIn('levels = getattr(terrain, "terrain_levels", None)', source)
+        self.assertIn("active = (asked > active_threshold).float()", source)
+        self.assertIn(
+            "return torch.clamp(levels.float() / reference, 0.0, 1.0) * active", source
+        )
+        cfg = (root / "src/wheelleg/config/env_cfgs.py").read_text(encoding="utf-8")
+        self.assertIn("standing.terrain_level_bonus", cfg)
 
     def test_body_level_is_muted_only_for_a_failed_fall(self):
         """A robot told to stand is the one that gets the allowance, not a folded one.

@@ -704,6 +704,98 @@ def recovery_scale(env, scale=FALLEN_ATTEMPT_SCALE):
                        torch.ones_like(fall, dtype=torch.float))
 
 
+# ---------------------------------------------------------------------------
+# The leg-motion taxes, and when they must stand down.
+#
+# action_rate and joint_acc exist to keep a gait smooth, and left ungated they buy
+# something worse than a smooth gait: a robot working its way over an obstacle has
+# to move its legs fast and far, and charging the full tax for exactly that motion
+# makes "keep the wheels down and push" cheaper than "stop and lift a wheel". A
+# machine that never lifts a wheel never climbs, which is what play showed -- the
+# legs did not move at all when it was blocked by a step.
+#
+# The reference 16DOF project gates its equivalent term on measured tilt and wheel
+# contact. Tilt is kept, and the third term is the one that matters here: the
+# *shortfall* between the commanded speed and the achieved speed, which is what
+# pushing against a step looks like on a wheeled machine. Being fallen is included
+# for the same reason as recovery_scale -- a robot standing up is working hard too.
+# ---------------------------------------------------------------------------
+LEG_MOTION_RELIEF = 0.2
+"""How far the leg-motion taxes relax when the legs are being worked hard."""
+RELIEF_TILT_START = 0.08  # rad, below this the robot is not really leaning
+RELIEF_TILT_END = 0.30  # rad, at or above this the relief is full
+RELIEF_BLOCKED_SPEED = 0.10  # m/s of command below which "blocked" means nothing
+
+
+def leg_motion_scale(
+    env,
+    scale=LEG_MOTION_RELIEF,
+    command_name="twist",
+    tilt_start=RELIEF_TILT_START,
+    tilt_end=RELIEF_TILT_END,
+    blocked_speed=RELIEF_BLOCKED_SPEED,
+):
+    """1 normally, ``scale`` where the robot is being asked to work its legs.
+
+    Never 0: the taxes are reduced, not removed, or a robot could thrash its way
+    up an obstacle and keep the habit on the flat.
+    """
+    tilt_relax = torch.clamp(
+        (total_tilt(env) - tilt_start) / max(tilt_end - tilt_start, 1e-6), 0.0, 1.0
+    )
+    asset = env.scene["wheelleg"]
+    command = env.command_manager.get_command(command_name)
+    speed = torch.norm(asset.data.root_link_lin_vel_b[:, :2], dim=1)
+    asked = torch.norm(command[:, :2], dim=1) + torch.abs(command[:, 2])
+    shortfall = torch.clamp(
+        (asked - speed) / torch.clamp(asked, min=1e-6), 0.0, 1.0
+    )
+    blocked = (asked > blocked_speed).float() * shortfall
+    relax = torch.maximum(
+        torch.maximum(tilt_relax, blocked), fallen_mask(env)
+    )
+    return 1.0 - (1.0 - scale) * relax
+
+
+def action_rate_motion_relieved(env, scale=LEG_MOTION_RELIEF):
+    """mjlab action_rate_l2, relaxed while the legs are being worked hard."""
+    from mjlab.envs import mdp as envs_mdp  # Lazy: keeps this module mjlab-free.
+
+    return envs_mdp.action_rate_l2(env) * leg_motion_scale(env, scale)
+
+
+def joint_acc_motion_relieved(env, asset_cfg=None, scale=LEG_MOTION_RELIEF):
+    """mjlab joint_acc_l2, relaxed while the legs are being worked hard."""
+    from mjlab.envs import mdp as envs_mdp
+
+    return envs_mdp.joint_acc_l2(env, asset_cfg=asset_cfg) * leg_motion_scale(env, scale)
+
+
+MAX_TERRAIN_LEVEL = 8.0
+"""Levels in the curriculum grid, used to normalise the traversal bonus."""
+
+
+def terrain_level_bonus(env, command_name="twist", reference=MAX_TERRAIN_LEVEL,
+                        active_threshold=0.1):
+    """Pay a little for being *asked* to travel a hard terrain row.
+
+    Gated on the command, not on movement, and that distinction is the whole point:
+    the seconds worth funding are the ones spent working at an obstacle, where the
+    robot cannot make the commanded speed and the tracking reward has already gone
+    to zero. Gating on movement would exclude exactly those seconds. A robot with
+    no command is not attempting the row and is not paid, and parking is still not
+    a way to farm this because the tracking reward requires real speed.
+    """
+    terrain = getattr(env.scene, "terrain", None)
+    levels = getattr(terrain, "terrain_levels", None)
+    if levels is None:
+        return torch.zeros(env.num_envs, device=env.device)
+    command = env.command_manager.get_command(command_name)
+    asked = torch.norm(command[:, :2], dim=1) + torch.abs(command[:, 2])
+    active = (asked > active_threshold).float()
+    return torch.clamp(levels.float() / reference, 0.0, 1.0) * active
+
+
 def body_level_error_recovery_scaled(env, scale=FALLEN_ATTEMPT_SCALE, **kwargs):
     """``body_level_error`` with the failed-fall allowance applied.
 
