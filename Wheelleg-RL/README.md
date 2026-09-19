@@ -86,6 +86,32 @@ NUM_ENVS=2048 ITERS=12000 bash scripts/train.sh rough
 NUM_ENVS=2048 ITERS=8000 bash scripts/train.sh recovery
 ```
 
+### 全地形（Rough）1000 次迭代
+
+想先跑一轮全地形实验，用：
+
+```bash
+cd ~/Wheelleg/8DOF-WheelLeg-RL/Wheelleg-RL
+NUM_ENVS=2048 ITERS=1000 bash scripts/train.sh rough
+```
+
+`scripts/train.sh` 的阶段映射是 `flat` → `Wheelleg-Flat-v0`、`rough` → `Wheelleg-Rough-v0`、`recovery` → `Wheelleg-Recovery-v0`。默认 `NUM_ENVS=2048`、`ITERS=5`，所以上面两个变量都要显式给。
+
+**1000 次迭代确实能看到全部地形。** `terrain_levels_obstacle_release` 的 `release_schedule` 比较的是 `env.common_step_counter`，而每个迭代推进 `num_steps_per_env=24` 步，所以配置里的 `200*24 / 500*24 / 700*24` 对应**第 200 / 500 / 700 次迭代**：
+
+| 迭代 | 放开的地形 |
+|---|---|
+| 0 | `flat`、`random_rough`、`perlin_noise`、`sloped_terrain`、`pyramid_stairs` |
+| 200 | `random_grid` |
+| 500 | `pyramid_stairs_inv` |
+| 700 | `rc_wall` |
+
+所以 1000 次迭代会覆盖全部 8 种地形。用 `ITERS=20` 冒烟只能见到初始那几种。
+
+Rough 的奖励集合和 Flat 不同：它移除 `track_lin_vel` / `track_ang_vel`，换成按轴拆分的 `track_lin_vel_x_exp`、`track_lin_vel_y_exp`、`track_ang_vel_z_exp`（各权重 1.0、`std=0.25`），并设置 `rel_lateral_envs=0.20`，即 20% 的环境专门下发横向命令，另有 `command_y_levels` 按横向跟踪表现自适应放宽命令范围。**横向能力在 Rough 里本来就是重点。**
+
+`NUM_ENVS=2048` 是 Rough 的设计值（地形生成器为 `num_rows=10`、`num_cols=20`）。显存不足或想加快迭代可以降到 `1024`，但地形课程的统计会更嘈杂。
+
 也可以直接使用 MJLab CLI：
 
 ```bash
@@ -216,9 +242,10 @@ uv run list-envs
 |---|---|---|---|
 | `low_posture_locomotion` | 奖励 −100 | **移动中**低于 **0.13 m** | 线性惩罚，越低越重；停着不动时为 0 |
 | `base_contact_penalty` | 奖励 −10 | 机身触地 | 趴在地上不重置，但持续扣分 |
-| `wheel_off_ground` | 奖励 −10 | 单轮离地超过 **0.25 s** | 0.25 s 内免费，1.0 s 时饱和；轮子是轮式机器人的支撑，不是「抬脚」 |
-| `wheeled_stance_locomotion` | 奖励 **+3** | 有移动指令 + 实际移动 + 机身达标 + 双轮着地 | 按接近站姿高度线性给分，跪行/抬轮/原地不动都拿不到 |
-| `leg_symmetry` | 奖励 −10 | 左右腿姿态不一致 | 大腿/膝全权重，髋 0.5 权重（见下） |
+| `no_wheel_support` | 奖励 −10 | **两个轮子都离地**超过 **0.25 s** | 只罚「完全失去支撑」；抬单腿迈步不罚（见下） |
+| `wheeled_stance_locomotion` | 奖励 **+3** | 有移动指令 + 实际移动 + 机身达标 | 按接近站姿高度线性给分；支撑按 `0.5+0.5×着地比例` 计，迈步不被打折 |
+| `lateral_step` | 奖励 **+1** | 横向指令 + 抬一腿 + 另一轮仍支撑 | 付钱给「迈步」本身，而不是让轮子侧滑 |
+| `leg_symmetry` | 奖励 −10 | 左右腿姿态不一致 | 前进/后退/转向时全额，横向移动时放开（见下） |
 | `base_height_l2` | 奖励 −4 | 目标 **0.145 m** | 始终生效，低姿态轻微扣分、趴地扣分明显 |
 | `standing_pose` | 奖励 −0.5 | 标准站姿 | 轻微约束腿型，不阻止抬腿 |
 | `bad_orientation` | **终止** | 倾斜超过 1.0 rad | 真正摔倒后才结束 episode |
@@ -228,17 +255,35 @@ uv run list-envs
 
 ```
 跪行、机身触地、双轮抬起、有移动指令：
-  净空 0.05 m -> 爬行 -61.5  机身 -10.0  抬轮 -10.0  合计  -81.5 /s
-  净空 0.02 m -> 爬行 -84.6  机身 -10.0  抬轮 -10.0  合计 -104.6 /s
+  净空 0.05 m -> 爬行 -61.5  机身 -10.0  失去支撑 -10.0  合计  -81.5 /s
+  净空 0.02 m -> 爬行 -84.6  机身 -10.0  失去支撑 -10.0  合计 -104.6 /s
 正常轮式站姿移动（0.145 m、双轮着地）：
   track_lin_vel +1.7  wheeled_stance_locomotion +3.0  wheel_contact_bonus +0.2  合计 ≈ +5 /s
 ```
 
 **两者相差约 20 倍**，跪行不再是可行策略。
 
-`leg_symmetry` 的度量方式有几何依据：模型里两个髋关节轴**都是 `+X`（没有镜像）**，所以左右腿视觉等高要求 `left_hip == -right_hip`，判断量是**和**；大腿和膝关节轴都是 `+Y`，绕 Y 旋转不涉及横向偏移，所以相同角度本身就是镜像对称，判断量是**差**。髋只给 0.5 权重，保留横向平衡和转向使用外展的自由度。**两足轮腿没有「对角步态」**——对角是四足概念，这里只有左右对称这一个有意义的选项。
+### 横向移动：只能迈步，不能滚
 
-**`feet_air_time` 已删除。** 这个奖励给「脚离地 0.1–0.5 s」加分，是给足式机器人鼓励抬腿迈步用的。对轮式机器人它是反的：**它直接付钱让策略把轮子抬起来**，正好鼓励了跪行。所以不是调权重，而是移除，并用 `wheel_off_ground` 反向的惩罚替代。同时新增 `Metrics/wheel_air_time_s` 和 `Metrics/wheel_contact_fraction` 作为替代观测。
+两个轮子的轴都沿 `Y`，滚动方向是 `X`。**所以这台机器人像差速小车一样，物理上无法靠滚动横向移动**——`lin_vel_y` 只能靠抬腿迈步实现，否则就是轮子侧滑。因此：
+
+- `no_wheel_support` 用**两个轮子 air time 的较小值**，即只在「**两个轮子同时离地**」时才开始计时。抬单腿迈步时另一个轮子仍在支撑，**无论抬多久都不罚**。这正是跪行（双轮全抬 + 机身触地）与正常迈步的区别。
+- `wheeled_stance_locomotion` 的支撑项用 `0.5 + 0.5×着地比例`：单轮支撑得 0.75，双轮得 1.0，所以迈步不被惩罚，但完全失去轮子支撑会掉到 0.5 再被 `no_wheel_support` 接管。
+- `lateral_step` 专门奖励「横向指令下抬一腿」，权重 +1/s。速度跟踪奖励只能看结果，**无法区分「迈步横移」和「轮子侧滑」**，所以需要单独奖励动作本身。
+- `leg_symmetry` 乘以 `1 − 横向指令强度`：`|cmd_y| ≥ 0.25 m/s` 时要求完全放开。**横向移动本来就必须左右不对称**（一条腿抬、一条腿撑），而前进/后退/转向不需要，所以只在前者放开。
+
+### 对称性的几何依据
+
+模型里两个髋关节轴**都是 `+X`（没有镜像）**。绕 `+X` 旋转 `a` 会把腿末端推向 `+y`，所以**镜像对称要求 `left_hip == -right_hip`，判断量是和**。大腿和膝关节轴都是 `+Y`，绕 `Y` 旋转不涉及横向偏移，相同角度本身就是镜像对称，判断量是**差**。髋只给 0.5 权重，保留横向平衡使用外展的自由度。
+
+**两足轮腿没有「对角步态」**——对角是四足概念，这里只有左右对称这一个有意义的选项。
+
+### 两个被移除的奖励
+
+- **`feet_air_time`**：给「脚离地 0.1–0.5 s」加分，是给足式机器人鼓励抬腿迈步用的。对轮式机器人它是反的：**它直接付钱让策略把轮子抬起来**，正好鼓励了跪行。所以不是调权重，而是移除，用 `no_wheel_support` 反向替代。
+- **rough 的 `abduction_mirror`**：它取两髋角之**差**，而上面证明了镜像对称应该取**和**。所以它在惩罚正确的对称外展、反而奖励会侧倾的同向模式，与 `leg_symmetry` 直接冲突，删除。
+
+新增观测：`Metrics/wheel_air_time_s`、`Metrics/wheel_support_time_s`、`Metrics/wheel_contact_fraction`、`Metrics/lateral_command`。
 
 行为含义：
 

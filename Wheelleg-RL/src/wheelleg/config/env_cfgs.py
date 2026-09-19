@@ -48,18 +48,28 @@ def _posture_contract(cfg, enforce_standing=True):
                 "yaw_rate": standing.YAW_RATE_MOVING,
             },
         )
-        # A wheeled robot must not travel on its body, and a wheel held in the air
-        # is a lost wheel. Both are penalties, not resets, so a fall is still
-        # allowed to happen; they only make kneeling unprofitable.
+        # A wheeled robot must not travel on its body, and it must not lose every
+        # wheel. Both are penalties, not resets, so a fall is still allowed to
+        # happen; they only make kneeling unprofitable.
         cfg.rewards["base_contact_penalty"] = RewardTermCfg(
             func=standing.base_ground_contact, weight=-10.0)
-        cfg.rewards["wheel_off_ground"] = RewardTermCfg(
-            func=standing.wheel_off_ground,
+        cfg.rewards["no_wheel_support"] = RewardTermCfg(
+            func=standing.no_wheel_support,
             weight=-10.0,
             params={
                 "sensor_name": "feet_ground_contact",
                 "allowance": standing.WHEEL_AIR_ALLOWANCE,
                 "horizon": standing.WHEEL_AIR_HORIZON,
+            },
+        )
+        # Sideways travel cannot be rolled, only stepped, so the step itself is
+        # paid for and the symmetry requirement is lifted while going sideways.
+        cfg.rewards["lateral_step"] = RewardTermCfg(
+            func=standing.lateral_step_reward,
+            weight=1.0,
+            params={
+                "command_name": "twist",
+                "sensor_name": "feet_ground_contact",
             },
         )
         cfg.rewards["wheeled_stance_locomotion"] = RewardTermCfg(
@@ -74,7 +84,10 @@ def _posture_contract(cfg, enforce_standing=True):
         )
         # Keep the two legs posed alike; an asymmetric gait is not a wheeled gait.
         cfg.rewards["leg_symmetry"] = RewardTermCfg(
-            func=standing.leg_symmetry_error, weight=-10.0)
+            func=standing.leg_symmetry_error,
+            weight=-10.0,
+            params={"command_name": "twist"},
+        )
         cfg.rewards["standing_pose"] = RewardTermCfg(
             func=standing.standing_pose_error, weight=-0.5)
         # `feet_air_time` rewards a foot for being *in the air* for 0.1-0.5 s,
@@ -82,11 +95,18 @@ def _posture_contract(cfg, enforce_standing=True):
         # pays the policy to lift its wheels off the ground, so it is removed
         # rather than retuned.
         cfg.rewards.pop("feet_air_time", None)
+        # The rough recipe's abduction mirror takes the difference of the two hip
+        # angles. With unmirrored hip axes that rewards the sideways tilt and
+        # penalises the mirror-symmetric splay, so it is dropped in favour of the
+        # correctly measured leg_symmetry.
+        cfg.rewards.pop("abduction_mirror", None)
 
     cfg.metrics["base_clearance_m"] = MetricsTermCfg(func=standing.base_clearance)
     cfg.metrics["moving_gate"] = MetricsTermCfg(func=standing.moving_gate)
     cfg.metrics["wheel_air_time_s"] = MetricsTermCfg(func=standing.wheel_air_time)
+    cfg.metrics["wheel_support_time_s"] = MetricsTermCfg(func=standing.wheel_support_time)
     cfg.metrics["wheel_contact_fraction"] = MetricsTermCfg(func=standing.wheel_contact_fraction)
+    cfg.metrics["lateral_command"] = MetricsTermCfg(func=standing.lateral_command_demand)
     return cfg
 
 

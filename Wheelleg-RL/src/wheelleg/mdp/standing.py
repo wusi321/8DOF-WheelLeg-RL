@@ -35,6 +35,11 @@ INVALID_CLEARANCE = -1.0
 LINEAR_SPEED_MOVING = 0.15  # m/s
 YAW_RATE_MOVING = 0.3  # rad/s
 
+# Sideways command magnitude that counts as a full lateral request. The task
+# samples |lin_vel_y| up to 0.5 m/s, so half of that is treated as "clearly
+# going sideways" for the symmetry relaxation and the step reward.
+LATERAL_COMMAND_REF = 0.25  # m/s
+
 # A wheel may leave the ground to roll over a bump or take a deliberate step, so
 # a lift is free up to the allowance; beyond it the penalty ramps to full over
 # the horizon. This is the knob to loosen if rough terrain needs longer lifts.
@@ -125,19 +130,31 @@ def wheel_air_time(env, sensor_name="feet_ground_contact"):
     return air.amax(dim=1)
 
 
-def wheel_off_ground(
+def wheel_support_time(env, sensor_name="feet_ground_contact"):
+    """How long *no* wheel has touched the ground, in seconds.
+
+    The minimum of the two air times: it only starts counting once both wheels
+    have left the ground. A single lifted wheel is a step, not a loss of support.
+    """
+    air = env.scene[sensor_name].data.current_air_time
+    if air is None:
+        raise ValueError(f"sensor {sensor_name!r} must set track_air_time=True")
+    return air.amin(dim=1)
+
+
+def no_wheel_support(
     env,
     sensor_name="feet_ground_contact",
     allowance=WHEEL_AIR_ALLOWANCE,
     horizon=WHEEL_AIR_HORIZON,
 ):
-    """Penalty in [0, 1] that ramps up while a wheel stays off the ground.
+    """Penalty in [0, 1] that ramps up while the robot has no wheel on the ground.
 
-    Zero for a brief lift over a bump; a wheel held up for ``allowance +
-    horizon`` seconds saturates. The robot is a wheeled machine, so a wheel in
-    the air is a lost wheel rather than a step.
+    Lifting one leg to step sideways is free for as long as it takes, because the
+    other wheel still carries the robot. Only losing *every* wheel is a fault, and
+    that is what the kneeling gait did.
     """
-    excess = torch.clamp(wheel_air_time(env, sensor_name) - allowance, min=0.0)
+    excess = torch.clamp(wheel_support_time(env, sensor_name) - allowance, min=0.0)
     return torch.clamp(excess / horizon, 0.0, 1.0)
 
 
@@ -147,13 +164,25 @@ def wheel_contact_fraction(env, sensor_name="feet_ground_contact"):
     return (found.reshape(env.num_envs, -1) > 0).float().mean(dim=1)
 
 
-def leg_symmetry_error(env):
-    """How differently the two legs are posed.
+def lateral_command_demand(env, command_name="twist", reference=LATERAL_COMMAND_REF):
+    """Sideways command strength, 0 (none) to 1 (at or above the reference)."""
+    command = env.command_manager.get_command(command_name)
+    return torch.clamp(torch.abs(command[:, 1]) / reference, 0.0, 1.0)
 
-    The hip axes are *not* mirrored in the model (both are ``+X``), so a level
-    pair needs ``left_hip == -right_hip``: the difference that tilts the robot is
-    the sum. The thigh and knee axes are both ``+Y``, where rotation does not
-    involve the lateral offset, so equal angles are already mirror-symmetric.
+
+def leg_symmetry_error(env, command_name="twist", lateral_reference=LATERAL_COMMAND_REF):
+    """How differently the two legs are posed, relaxed for sideways travel.
+
+    The hip axes are *not* mirrored in the model (both are ``+X``), so a
+    mirror-symmetric pair needs ``left_hip == -right_hip`` and the hip term is the
+    sum. The thigh and knee axes are both ``+Y``, where rotation does not involve
+    the lateral offset, so equal angles are already mirror-symmetric and their
+    term is the difference.
+
+    A two-wheel differential robot cannot roll sideways, so sideways travel has to
+    be *stepped*: one leg lifts while the other supports. That asymmetry is
+    correct, so the requirement fades out as the sideways command grows and stays
+    in force for forward, backward and turning commands.
     """
     asset = env.scene["wheelleg"]
     ids, _ = asset.find_joints(_LEG_JOINTS, preserve_order=True)
@@ -164,7 +193,26 @@ def leg_symmetry_error(env):
         dim=1,
     )
     weights = mismatch.new_tensor(_SYMMETRY_WEIGHTS)
-    return torch.mean(torch.square(mismatch) * weights, dim=1)
+    error = torch.mean(torch.square(mismatch) * weights, dim=1)
+    return error * (1.0 - lateral_command_demand(env, command_name, lateral_reference))
+
+
+def lateral_step_reward(
+    env,
+    command_name="twist",
+    reference=LATERAL_COMMAND_REF,
+    sensor_name="feet_ground_contact",
+):
+    """Pay for stepping a leg while a sideways command is active.
+
+    Wheels cannot roll sideways, so a sideways command is only achievable by
+    lifting a leg, translating it and planting it again. Velocity tracking alone
+    cannot prefer that over simply slipping, so the step itself is rewarded. The
+    other wheel must still be carrying the robot, which rules out a fall.
+    """
+    lifting = (wheel_air_time(env, sensor_name) > 0.0).float()
+    supporting = (wheel_support_time(env, sensor_name) <= 0.0).float()
+    return lateral_command_demand(env, command_name, reference) * lifting * supporting
 
 
 def wheeled_stance_locomotion(
@@ -178,10 +226,13 @@ def wheeled_stance_locomotion(
     """Reward for travelling in a wheeled standing posture.
 
     Paid only when a locomotion command is active, the robot is actually
-    travelling, the body is clear of the ground and both wheels are down, and it
-    scales with how close the body is to the working stance height. Kneeling,
-    lifting the wheels and standing still all earn nothing, so it cannot be
-    farmed by refusing to move.
+    travelling and the body is clear of the ground, and it scales with how close
+    the body is to the working stance height. Kneeling, lying down and standing
+    still all earn nothing, so it cannot be farmed by refusing to move.
+
+    Wheel support is scored as ``0.5 + 0.5 * contact fraction`` rather than the
+    fraction itself: a stepping gait rests on one wheel between plants and must
+    not be taxed for it, while a robot with no wheel down loses the reward.
     """
     command = env.command_manager.get_command(command_name)
     commanded = (
@@ -192,4 +243,5 @@ def wheeled_stance_locomotion(
     span = max(target_clearance - min_clearance, 1e-6)
     height = torch.clamp((clearance - min_clearance) / span, 0.0, 1.0)
     height = torch.where(_measurable(clearance), height, torch.zeros_like(height))
-    return commanded * moving_gate(env) * height * wheel_contact_fraction(env, sensor_name)
+    support = 0.5 + 0.5 * wheel_contact_fraction(env, sensor_name)
+    return commanded * moving_gate(env) * height * support

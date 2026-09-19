@@ -146,11 +146,15 @@ class PoseTests(unittest.TestCase):
         self.assertGreater(standing.standing_pose_error(env)[0].item(), 0.0)
 
 
-def _sym_env(hip_l, thigh_l, knee_l, hip_r, thigh_r, knee_r):
+def _sym_env(hip_l, thigh_l, knee_l, hip_r, thigh_r, knee_r, command=(1.0, 0.0, 0.0)):
     q = torch.tensor([[hip_l, thigh_l, knee_l, hip_r, thigh_r, knee_r]])
-    return SimpleNamespace(num_envs=1, scene={"wheelleg": SimpleNamespace(
-        data=SimpleNamespace(joint_pos=q),
-        find_joints=lambda names, preserve_order: (list(range(6)), names))})
+    cmd = torch.tensor([[float(v) for v in command]])
+    return SimpleNamespace(
+        num_envs=1,
+        command_manager=SimpleNamespace(get_command=lambda name: cmd),
+        scene={"wheelleg": SimpleNamespace(
+            data=SimpleNamespace(joint_pos=q),
+            find_joints=lambda names, preserve_order: (list(range(6)), names))})
 
 
 class SymmetryTests(unittest.TestCase):
@@ -178,19 +182,45 @@ class SymmetryTests(unittest.TestCase):
         self.assertGreater(standing.leg_symmetry_error(large)[0].item(),
                            standing.leg_symmetry_error(small)[0].item())
 
+    def test_forward_commands_still_demand_symmetry(self):
+        stepped = _sym_env(0.0, 0.85, -1.23, 0.0, 0.45, -1.23, command=(1.0, 0.0, 0.0))
+        self.assertGreater(standing.leg_symmetry_error(stepped)[0].item(), 0.0)
 
-class WheelGroundTests(unittest.TestCase):
-    def test_brief_lift_over_a_bump_is_free(self):
-        env = _env([0.14] * 2, air=[0.0, standing.WHEEL_AIR_ALLOWANCE])
-        self.assertEqual(standing.wheel_off_ground(env).tolist(), [0.0, 0.0])
+    def test_sideways_commands_release_symmetry_for_stepping(self):
+        """Sideways travel has to step, so the mismatch is legitimate there."""
+        stepped = _sym_env(0.0, 0.85, -1.23, 0.0, 0.45, -1.23,
+                           command=(0.0, standing.LATERAL_COMMAND_REF, 0.0))
+        self.assertEqual(standing.leg_symmetry_error(stepped)[0].item(), 0.0)
 
-    def test_sustained_lift_saturates(self):
+
+class WheelSupportTests(unittest.TestCase):
+    def test_one_leg_lifted_still_has_support(self):
+        """A sideways step needs one wheel up; that must not count as a fault."""
+        env = _env([0.14])
+        env.scene["feet_ground_contact"].data.current_air_time = torch.tensor([[0.9, 0.0]])
+        self.assertEqual(standing.wheel_support_time(env)[0].item(), 0.0)
+        self.assertEqual(standing.no_wheel_support(env)[0].item(), 0.0)
+
+    def test_losing_every_wheel_is_a_fault(self):
+        env = _env([0.14])
+        env.scene["feet_ground_contact"].data.current_air_time = torch.tensor([[0.9, 1.2]])
+        self.assertAlmostEqual(standing.wheel_support_time(env)[0].item(), 0.9, places=6)
+        self.assertGreater(standing.no_wheel_support(env)[0].item(), 0.0)
+
+    def test_brief_hop_is_free(self):
+        env = _env([0.14] * 2)
+        env.scene["feet_ground_contact"].data.current_air_time = torch.tensor(
+            [[standing.WHEEL_AIR_ALLOWANCE] * 2, [0.03, 0.03]])
+        self.assertEqual(standing.no_wheel_support(env).tolist(), [0.0, 0.0])
+
+    def test_no_support_saturates(self):
         full = standing.WHEEL_AIR_ALLOWANCE + standing.WHEEL_AIR_HORIZON
-        env = _env([0.14] * 3, air=[full, 0.4, 0.35])
-        penalty = standing.wheel_off_ground(env)
+        env = _env([0.14] * 2)
+        env.scene["feet_ground_contact"].data.current_air_time = torch.tensor(
+            [[full, full], [0.4, 0.4]])
+        penalty = standing.no_wheel_support(env)
         self.assertEqual(penalty[0].item(), 1.0)
-        self.assertGreater(penalty[1].item(), penalty[2].item())
-        self.assertGreater(penalty[2].item(), 0.0)
+        self.assertGreater(penalty[1].item(), 0.0)
 
     def test_air_time_is_the_worst_wheel(self):
         env = _env([0.14])
@@ -200,6 +230,33 @@ class WheelGroundTests(unittest.TestCase):
     def test_contact_fraction_counts_both_wheels(self):
         env = _env([0.14] * 3, wheel_contact=[[1, 1], [1, 0], [0, 0]])
         self.assertEqual(standing.wheel_contact_fraction(env).tolist(), [1.0, 0.5, 0.0])
+
+
+class LateralStepTests(unittest.TestCase):
+    def test_lateral_demand_scales_with_the_command(self):
+        env = _env([0.14], command=[[0.0, standing.LATERAL_COMMAND_REF / 2, 0.0]])
+        self.assertAlmostEqual(standing.lateral_command_demand(env)[0].item(), 0.5, places=6)
+        env = _env([0.14], command=[[0.0, standing.LATERAL_COMMAND_REF * 4, 0.0]])
+        self.assertEqual(standing.lateral_command_demand(env)[0].item(), 1.0)
+        env = _env([0.14], command=[[0.0, 0.0, 0.0]])
+        self.assertEqual(standing.lateral_command_demand(env)[0].item(), 0.0)
+
+    def test_step_reward_needs_a_sideways_command(self):
+        env = _env([0.14], wheel_contact=[[1, 0]], command=[[1.0, 0.0, 0.0]])
+        env.scene["feet_ground_contact"].data.current_air_time = torch.tensor([[0.3, 0.0]])
+        self.assertEqual(standing.lateral_step_reward(env)[0].item(), 0.0)
+
+    def test_step_reward_pays_for_a_sideways_step(self):
+        env = _env([0.14], wheel_contact=[[1, 0]],
+                   command=[[0.0, standing.LATERAL_COMMAND_REF, 0.0]])
+        env.scene["feet_ground_contact"].data.current_air_time = torch.tensor([[0.3, 0.0]])
+        self.assertEqual(standing.lateral_step_reward(env)[0].item(), 1.0)
+
+    def test_step_reward_does_not_pay_when_every_wheel_is_up(self):
+        env = _env([0.14], wheel_contact=[[0, 0]],
+                   command=[[0.0, standing.LATERAL_COMMAND_REF, 0.0]])
+        env.scene["feet_ground_contact"].data.current_air_time = torch.tensor([[0.3, 0.3]])
+        self.assertEqual(standing.lateral_step_reward(env)[0].item(), 0.0)
 
 
 class WheeledStanceLocomotionTests(unittest.TestCase):
