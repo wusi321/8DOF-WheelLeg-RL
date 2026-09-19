@@ -233,3 +233,22 @@ def solve_stance(target: float = STANDING_CLEARANCE, axle_x: float = 0.0):
 
 # Solved once: the pose the policy is initialised to and asked to hold.
 NOMINAL_STANCE = solve_stance()
+
+# The fully folded pose from robot_description/完全趴下落地.txt. The reported hip
+# 0.91 and thigh 1.31 round just past the hard joint limits, so they are pinned
+# to the limits here rather than carried as literals; the knee value is inside its
+# limit as given. Both pinned joints are also well outside the 0.95 soft limits,
+# which is why the joint-limit penalty is scaled down while the robot is down.
+# With the legs folded and the body resting on its base mesh the wheel rims clear
+# the ground by 1.1 mm, so the wheels really are stowed and the body carries the
+# robot. Verified by scripts/folded_pose_check.py.
+FOLDED_STANCE = (HIP_LIMIT[1], THIGH_LIMIT[1], -2.62)
+# Base origin height at which the folded body rests on its base mesh: the mesh
+# spans z = 0.000..0.060 in the base frame, so z = 0 puts its bottom face on the
+# ground. The margin guards against initial penetration.
+FOLDED_REST_Z = 0.002
+# Halfway between the folded pose and the nominal stance: a real mid-recovery
+# crouch, with the wheels still carrying the robot.
+CROUCH_STANCE = (0.4538, 1.0776, -1.9267)
+CROUCH_SPAWN_Z = clearance(CROUCH_STANCE[1], CROUCH_STANCE[2], CROUCH_STANCE[0])
+SPAWN_MARGIN = 0.002

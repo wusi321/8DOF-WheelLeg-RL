@@ -40,6 +40,20 @@ def _posture_contract(cfg, enforce_standing=True):
         },
     )
 
+    # Reverse-curriculum spawns. Without them the policy only ever starts
+    # standing, falls at once, and never observes the successful stand-up branch,
+    # so the progress potentials have no positive side to discover. This is the
+    # MicroDuck VelStand fix for "learns the start, never the last mile".
+    cfg.events["spawn_fallen"] = EventTermCfg(
+        func=standing.spawn_fallen_state,
+        mode="reset",
+        params={
+            "folded_probability": 0.5,
+            "crouch_probability": 0.25,
+            "asset_cfg": SceneEntityCfg("wheelleg"),
+        },
+    )
+
     if enforce_standing:
         cfg.rewards["base_height_l2"] = RewardTermCfg(
             func=standing.standing_height_error,

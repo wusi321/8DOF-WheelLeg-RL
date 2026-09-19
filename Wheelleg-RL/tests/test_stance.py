@@ -188,6 +188,33 @@ class EnvironmentConfigTests(unittest.TestCase):
         source = (root / "src/wheelleg/config/env_cfgs.py").read_text(encoding="utf-8")
         self.assertIn("enforce_standing=False", source)
 
+    def test_reverse_curriculum_spawns_are_configured(self):
+        """Prone starts are what let the stand-up branch ever be discovered."""
+        cfg = (root / "src/wheelleg/config/env_cfgs.py").read_text(encoding="utf-8")
+        self.assertIn("standing.spawn_fallen_state", cfg)
+        self.assertIn('cfg.events["spawn_fallen"]', cfg)
+        self.assertIn("folded_probability", cfg)
+        self.assertIn("crouch_probability", cfg)
+
+    def test_spawn_heights_are_between_the_ground_and_standing(self):
+        """The spawn poses must be reachable poses, not arbitrary numbers."""
+        # The folded body rests on its base mesh, so the base origin is near zero.
+        self.assertLess(stance.FOLDED_REST_Z, 0.01)
+        # The mid-recovery crouch is a real crouch: above the ground, below stance.
+        self.assertGreater(stance.CROUCH_SPAWN_Z, 0.02)
+        self.assertLess(stance.CROUCH_SPAWN_Z, stance.STANDING_CLEARANCE)
+        self.assertGreater(stance.CROUCH_SPAWN_Z, stance.MIN_CLEARANCE / 2)
+        # The folded pose really is the pose from the supplied data file, with the
+        # two over-limit joints pinned to the hard limits rather than literals.
+        hip, thigh, knee = stance.FOLDED_STANCE
+        self.assertEqual(hip, stance.HIP_LIMIT[1])
+        self.assertEqual(thigh, stance.THIGH_LIMIT[1])
+        self.assertAlmostEqual(knee, -2.62, places=6)
+        self.assertGreater(knee, stance.KNEE_LIMIT[0])
+        # Folded is a genuine crouch: far lower than the nominal stance.
+        self.assertLess(stance.clearance(thigh, knee, hip),
+                        stance.clearance(*stance.NOMINAL_STANCE[1:]) - 0.10)
+
     def test_crawl_penalty_dominates_velocity_tracking(self):
         """Travelling at 0.12 m must cost more than the tracking reward pays."""
         penalty_weight = 100.0

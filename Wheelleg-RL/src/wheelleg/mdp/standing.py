@@ -23,7 +23,16 @@ it, measured by a single downward ray. See ``wheelleg.stance`` for the geometry.
 """
 import torch
 
-from ..stance import MIN_CLEARANCE, NOMINAL_STANCE, STANDING_CLEARANCE
+from ..stance import (
+    CROUCH_SPAWN_Z,
+    CROUCH_STANCE,
+    FOLDED_REST_Z,
+    FOLDED_STANCE,
+    MIN_CLEARANCE,
+    NOMINAL_STANCE,
+    SPAWN_MARGIN,
+    STANDING_CLEARANCE,
+)
 
 # Sentinel returned when the ray finds no ground. It is deliberately negative so
 # that "unknown" can never be mistaken for a measurable clearance, and every
@@ -619,6 +628,81 @@ def attempt_scale(env, scale=FALLEN_ATTEMPT_SCALE):
     fallen = fallen_mask(env).bool()
     return torch.where(fallen, torch.full_like(fallen, scale, dtype=torch.float),
                        torch.ones_like(fallen, dtype=torch.float))
+
+
+# Reverse-curriculum spawn states. The poses and their rest heights are geometry,
+# so they live in ``wheelleg.stance`` next to the nominal stance; they are
+# imported above and re-exported here for the task config.
+#   FOLDED_STANCE, FOLDED_REST_Z, CROUCH_STANCE, CROUCH_SPAWN_Z, SPAWN_MARGIN
+
+
+def spawn_fallen_state(
+    env,
+    env_ids=None,
+    folded_probability=0.5,
+    crouch_probability=0.25,
+    asset_cfg=None,
+):
+    """Reset a slice of episodes already on the ground: reverse-curriculum spawns.
+
+    With only a standing start, the policy falls immediately and never observes
+    the successful standing-up branch, so the progress potentials have nothing
+    positive to discover and the run settles into a flat "lying still" optimum --
+    every episode almost identical, no advantage signal, no learning. MicroDuck's
+    VelStand notes reach the same conclusion, calling prone and mid-recovery
+    spawns "the reliable fix for learns-the-start-never-the-last-mile".
+
+    ``folded_probability`` starts episodes in the fully folded pose from
+    完全趴下落地.txt, the pose the supplied get-up begins from;
+    ``crouch_probability`` starts them halfway up, which is where the last mile
+    of a stand-up lives and where a policy trained only from prone rarely finds
+    itself.
+    """
+    from mjlab.envs.mdp.events import resolve_env_ids  # Lazy: keeps this pure.
+
+    env_ids = resolve_env_ids(env, env_ids)
+    if asset_cfg is None:
+        raise ValueError("spawn_fallen_state needs asset_cfg for the wheelleg entity")
+    asset = env.scene[asset_cfg.name]
+
+    draw = torch.rand(len(env_ids), device=env.device)
+    folded = draw < folded_probability
+    crouch = (draw >= folded_probability) & (draw < folded_probability + crouch_probability)
+    selected = folded | crouch
+    if not bool(selected.any()):
+        return
+    chosen = env_ids[selected]
+    is_folded = folded[selected]
+
+    leg_ids, _ = asset.find_joints(_LEG_JOINTS, preserve_order=True)
+    leg_ids = torch.tensor(leg_ids, device=env.device, dtype=torch.long)
+    folded_pose = torch.tensor(
+        [FOLDED_STANCE[0], FOLDED_STANCE[1], FOLDED_STANCE[2]] * 2, device=env.device
+    )
+    crouch_pose = torch.tensor(
+        [CROUCH_STANCE[0], CROUCH_STANCE[1], CROUCH_STANCE[2]] * 2, device=env.device
+    )
+    joint_pos = torch.where(is_folded.unsqueeze(1), folded_pose, crouch_pose)
+    asset.write_joint_state_to_sim(
+        joint_pos, torch.zeros_like(joint_pos), env_ids=chosen, joint_ids=leg_ids
+    )
+
+    root = asset.data.default_root_state[chosen].clone()
+    pose = root[:, 0:3].clone()
+    height = torch.where(
+        is_folded,
+        torch.full_like(is_folded, FOLDED_REST_Z, dtype=torch.float),
+        torch.full_like(is_folded, CROUCH_SPAWN_Z + SPAWN_MARGIN, dtype=torch.float),
+    )
+    pose[:, 2] = height + env.scene.env_origins[chosen, 2]
+    # The default orientation is upright: the folded body lies belly-down with its
+    # z axis still vertical, it does not tip over.
+    asset.write_root_link_pose_to_sim(
+        torch.cat([pose, root[:, 3:7]], dim=-1), env_ids=chosen
+    )
+    asset.write_root_link_velocity_to_sim(
+        torch.zeros_like(root[:, 7:13]), env_ids=chosen
+    )
 
 
 def action_rate_fallen_scaled(env, scale=FALLEN_ATTEMPT_SCALE):
