@@ -135,9 +135,32 @@ class EnvironmentConfigTests(unittest.TestCase):
     def test_falling_is_allowed_until_the_robot_cannot_get_up(self):
         """A fall must not reset instantly, or getting up can never be learned."""
         source = (root / "src/wheelleg/mdp/standing.py").read_text(encoding="utf-8")
-        self.assertIn("class FallenTooLong", source)
-        self.assertIn("self._down_time > self.max_down_time", source)
-        self.assertIn("def reset(self, env_ids=None)", source)
+        self.assertIn("def fallen_too_long", source)
+        self.assertIn("env._fold_seconds >= fold_stand_deadline", source)
+        self.assertIn("env._down_seconds >= max_down_time", source)
+
+    def test_recovery_shaping_is_potential_based(self):
+        """A per-step bonus for being folded would be farmed by parking there."""
+        source = (root / "src/wheelleg/mdp/standing.py").read_text(encoding="utf-8")
+        self.assertIn("def upright_progress", source)
+        self.assertIn("def height_progress", source)
+        self.assertIn("def recovery_success", source)
+        self.assertIn("def fallen_tax", source)
+        # Progress must be a delta against the previous step, never a state value.
+        self.assertIn("delta = value - previous", source)
+
+    def test_attempt_taxes_are_scaled_while_fallen(self):
+        source = (root / "src/wheelleg/mdp/standing.py").read_text(encoding="utf-8")
+        self.assertIn("def attempt_scale", source)
+        for name in ("action_rate_fallen_scaled", "joint_acc_fallen_scaled",
+                     "joint_pos_limits_fallen_scaled"):
+            self.assertIn(f"def {name}", source)
+        cfg = (root / "src/wheelleg/config/env_cfgs.py").read_text(encoding="utf-8")
+        for name in ("standing.action_rate_fallen_scaled",
+                     "standing.joint_pos_limits_fallen_scaled",
+                     "standing.fallen_tax", "standing.recovery_success",
+                     "standing.upright_progress", "standing.height_progress"):
+            self.assertIn(name, cfg)
 
     def test_terrain_difficulty_never_starts_at_zero(self):
         """Difficulty 0 makes obstacle terrains literally flat."""

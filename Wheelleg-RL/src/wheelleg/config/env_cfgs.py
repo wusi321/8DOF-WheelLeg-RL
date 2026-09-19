@@ -33,10 +33,10 @@ def _posture_contract(cfg, enforce_standing=True):
         cfg.terminations.pop(name, None)
     cfg.terminations.pop("bad_orientation", None)
     cfg.terminations["fallen_too_long"] = TerminationTermCfg(
-        func=standing.FallenTooLong,
+        func=standing.fallen_too_long,
         params={
             "max_down_time": standing.MAX_DOWN_TIME,
-            "tilt_limit": standing.DOWN_TILT_LIMIT,
+            "fold_stand_deadline": standing.FOLD_STAND_DEADLINE,
         },
     )
 
@@ -119,6 +119,59 @@ def _posture_contract(cfg, enforce_standing=True):
         )
         cfg.rewards["standing_pose"] = RewardTermCfg(
             func=standing.standing_pose_error, weight=-0.5)
+
+        # -- Fall recovery, following the VelStand task in the MicroDuck
+        # reference. Rising pays and holding pays zero, so none of it can be
+        # farmed by parking in a convenient pose.
+        cfg.rewards["upright_progress"] = RewardTermCfg(
+            func=standing.upright_progress, weight=5.0)
+        cfg.rewards["height_progress"] = RewardTermCfg(
+            func=standing.height_progress,
+            weight=30.0,
+            params={"ceiling": standing.HEIGHT_CEILING},
+        )
+        # A flat tax on staying down. Without it, lying still is cheap while
+        # attempting a recovery pays the attempt taxes below.
+        cfg.rewards["fallen_tax"] = RewardTermCfg(
+            func=standing.fallen_tax, weight=-0.5)
+        # One-shot bounty for finishing the stand, with a reachable definition
+        # (25 degrees and 0.11 m, not the full 0.145 m stance).
+        cfg.rewards["recovery_success"] = RewardTermCfg(
+            func=standing.recovery_success,
+            weight=10.0,
+            params={
+                "up_tilt": standing.RECOVERED_TILT,
+                "up_clearance": standing.RECOVERED_CLEARANCE,
+            },
+        )
+        # Attempt taxes: reduced, not removed, while the robot is down. The folded
+        # pose sits on the hip and thigh hard limits, so an unscaled joint-limit
+        # penalty would charge the robot for adopting the pose it must stand from.
+        scale = standing.FALLEN_ATTEMPT_SCALE
+        cfg.rewards["action_rate"] = RewardTermCfg(
+            func=standing.action_rate_fallen_scaled,
+            weight=cfg.rewards["action_rate"].weight if "action_rate" in cfg.rewards else -0.01,
+            params={"scale": scale})
+        leg_names = ("(left|right)_hip_joint", "(left|right)_thigh_joint",
+                     "(left|right)_knee_joint")
+        # Flat carries one joint-acceleration term over every joint; rough pops it
+        # for split leg and wheel terms. Scale whichever this task has.
+        if "joint_acc" in cfg.rewards:
+            cfg.rewards["joint_acc"] = RewardTermCfg(
+                func=standing.joint_acc_fallen_scaled,
+                weight=cfg.rewards["joint_acc"].weight,
+                params={"asset_cfg": SceneEntityCfg("wheelleg"), "scale": scale})
+        if "leg_joint_acc_l2" in cfg.rewards:
+            cfg.rewards["leg_joint_acc_l2"] = RewardTermCfg(
+                func=standing.joint_acc_fallen_scaled,
+                weight=cfg.rewards["leg_joint_acc_l2"].weight,
+                params={"asset_cfg": SceneEntityCfg("wheelleg", joint_names=leg_names),
+                        "scale": scale})
+        if "joint_pos_limits" in cfg.rewards:
+            cfg.rewards["joint_pos_limits"] = RewardTermCfg(
+                func=standing.joint_pos_limits_fallen_scaled,
+                weight=cfg.rewards["joint_pos_limits"].weight,
+                params={"asset_cfg": SceneEntityCfg("wheelleg"), "scale": scale})
         # `feet_air_time` rewards a foot for being *in the air* for 0.1-0.5 s,
         # which is a stepping incentive for legged robots. On a wheeled machine it
         # pays the policy to lift its wheels off the ground, so it is removed
@@ -141,6 +194,10 @@ def _posture_contract(cfg, enforce_standing=True):
     cfg.metrics["wheel_contact_fraction"] = MetricsTermCfg(func=standing.wheel_contact_fraction)
     cfg.metrics["lateral_command"] = MetricsTermCfg(func=standing.lateral_command_demand)
     cfg.metrics["body_level_error"] = MetricsTermCfg(func=standing.body_level_error)
+    cfg.metrics["fallen"] = MetricsTermCfg(func=standing.fallen_mask)
+    cfg.metrics["recovered"] = MetricsTermCfg(func=standing.recovered_mask)
+    cfg.metrics["fold_complete"] = MetricsTermCfg(func=standing.fold_complete)
+    cfg.metrics["folded_pose_error"] = MetricsTermCfg(func=standing.folded_pose_error)
     cfg.metrics["wheel_height_diff_m"] = MetricsTermCfg(
         func=standing.wheel_height_difference,
         params={"asset_cfg": SceneEntityCfg("wheelleg", body_names=standing._WHEEL_BODIES)},

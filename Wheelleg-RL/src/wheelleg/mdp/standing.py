@@ -64,11 +64,9 @@ FORWARD_LEAN_ALLOWANCE = 0.30  # rad, about 17 degrees
 BACKWARD_LEAN_SCALE = 1.5
 MAX_TILT_COST = 0.6  # rad, about 34 degrees
 
-# How far the body may tip, and for how long, before the episode is ended. A
-# get-up takes a second or two, so three seconds is enough time to practise while
-# halving how long a failed episode spends accumulating penalties.
+# How far the body may tip before it counts as fallen. The recovery deadline is
+# set per fall in the recovery section below.
 DOWN_TILT_LIMIT = 0.9  # rad, about 52 degrees
-MAX_DOWN_TIME = 3.0  # s
 
 # Sideways speed that counts as genuinely translating sideways rather than
 # merely rotating, used by the lateral step reward.
@@ -401,39 +399,252 @@ def lateral_step_reward(
     return lateral_command_demand(env, command_name, reference) * translating * lifting * supporting
 
 
-class FallenTooLong:
-    """End an episode only once the robot has been down for a while.
+# ---------------------------------------------------------------------------
+# Fall recovery
+#
+# The structure below follows the VelStand task in the MicroDuck reference
+# project (`microduck_rl/src/mjlab_microduck/tasks/`), whose comments record
+# several failed runs spent on exactly this problem. Its rules, which this
+# module follows deliberately:
+#
+# * Never gate a positive reward on being in a bad state. A per-step bonus for
+#   being folded or lying pays the policy to park there; paying the *change* of
+#   a potential (Ng et al. shaping) pays for rising, charges for falling and
+#   pays exactly zero for holding, so it cannot be farmed. Penalties on bad
+#   states are safe.
+# * A hard skill must not be taxed while it is being discovered: scale the
+#   smoothness and limit penalties down while the robot is down, or "do nothing"
+#   wins.
+# * Judge recovery complete with a *reachable* threshold. Their first bounty
+#   demanded a trunk height above anything the policy achieved and never fired.
+# * A fall needs a bounded recovery window, or a failed recovery farms the
+#   episode and starves walking of data.
+# ---------------------------------------------------------------------------
 
-    Resetting the instant the body tips teaches the policy that falling is a way
-    to end the episode, and never gives it the seconds it needs to practise
-    standing back up. Here the episode continues while the robot is down and ends
-    only after ``max_down_time`` seconds without recovering, so getting up is
-    worth learning.
+# Fallen gates, in the spirit of the reference: tilt OR height, not body contact,
+# because the box chassis can wedge on a side without the body sensor firing.
+FALLEN_TILT = 0.70  # rad, about 40 degrees
+FALLEN_CLEARANCE = 0.08  # m
+# "Recovered": the reference used 25 degrees and a height it knew was reachable.
+RECOVERED_TILT = 0.44  # rad, about 25 degrees
+RECOVERED_CLEARANCE = 0.11  # m, 76% of the standing clearance
+# Height potential saturates just below full stand so hopping pays nothing extra.
+HEIGHT_CEILING = 0.14  # m
+# Start of the standing-up move: the pose from 完全趴下落地.txt, clamped to the
+# model's hard joint limits (the reported hip 0.91 and thigh 1.31 sit 0.002 rad
+# outside them).
+FOLDED_STANCE = (0.90757, 1.30900, -2.62)
+FOLD_TOLERANCE = 0.20  # rad per joint
+# Once the legs are folded, the robot has this long to be upright again before
+# the environment is recycled; MAX_DOWN_TIME is the backstop for a fall that
+# never reaches the folded pose at all.
+FOLD_STAND_DEADLINE = 2.0  # s
+MAX_DOWN_TIME = 6.0  # s
+# Attempt taxes are reduced, never removed, while the robot is down.
+FALLEN_ATTEMPT_SCALE = 0.1
+
+
+def _fresh(env):
+    """True on the first step after a reset, where per-episode state restarts."""
+    return env.episode_length_buf <= 1
+
+
+def fallen_mask(env, tilt_gate=FALLEN_TILT, clearance_gate=FALLEN_CLEARANCE):
+    """1.0 where the robot counts as fallen: too tilted, or too low."""
+    tilted = total_tilt(env) > tilt_gate
+    low = base_clearance(env) < clearance_gate
+    return (tilted | low).float()
+
+
+def recovered_mask(env, tilt_gate=RECOVERED_TILT, clearance=RECOVERED_CLEARANCE):
+    """1.0 where the robot counts as genuinely standing again."""
+    upright = total_tilt(env) < tilt_gate
+    high = base_clearance(env) > clearance
+    return (upright & high).float()
+
+
+def _potential_delta(env, key, value):
+    """Per-step change of a potential, restarting cleanly after a reset."""
+    previous = getattr(env, key, None)
+    if previous is None:
+        previous = value.clone()
+        setattr(env, key, previous)
+    fresh = _fresh(env)
+    previous[fresh] = value[fresh]
+    delta = value - previous
+    setattr(env, key, value.clone())
+    return delta
+
+
+def upright_progress(env):
+    """Potential-based shaping on cos(tilt): rising pays, holding pays zero."""
+    gravity_z = torch.nan_to_num(
+        env.scene["wheelleg"].data.projected_gravity_b[:, 2], nan=-1.0
+    )
+    return _potential_delta(env, "_upright_potential", -gravity_z)
+
+
+def height_progress(env, ceiling=HEIGHT_CEILING):
+    """Potential-based shaping on clearance: the last mile is mostly height.
+
+    Extending the knees out of a deep crouch changes height far more than tilt,
+    which is exactly where the tilt term is flat.
     """
+    clearance = torch.clamp(base_clearance(env), min=0.0, max=ceiling)
+    return _potential_delta(env, "_height_potential", clearance)
 
-    def __init__(self, cfg, env):
-        self.max_down_time = float(cfg.params["max_down_time"])
-        self.tilt_limit = float(cfg.params["tilt_limit"])
-        self._down_time = torch.zeros(env.num_envs, device=env.device)
-        self._dt = env.step_dt
 
-    def _is_down(self, env):
-        gravity_z = torch.nan_to_num(env.scene["wheelleg"].data.projected_gravity_b[:, 2])
-        tilted = torch.acos(torch.clamp(-gravity_z, -1.0, 1.0)) > self.tilt_limit
-        return tilted | base_ground_contact(env)
+def fallen_tax(
+    env,
+    tilt_gate=FALLEN_TILT,
+    clearance_gate=FALLEN_CLEARANCE,
+    release_tilt=RECOVERED_TILT,
+    release_clearance=RECOVERED_CLEARANCE,
+):
+    """Flat 1.0 per step while down, with hysteresis on the way out.
 
-    def __call__(self, env, max_down_time, tilt_limit):
-        del max_down_time, tilt_limit  # Read once in __init__.
-        down = self._is_down(env)
-        self._down_time = torch.where(
-            down, self._down_time + self._dt, torch.zeros_like(self._down_time)
-        )
-        return self._down_time > self.max_down_time
+    Without it, lying still is cheap while attempting a recovery pays the
+    attempt taxes, so waiting to be recycled is the rational policy. The release
+    needs the *recovered* thresholds, not the arming gate, or a crouch just
+    under the gate becomes a free rest state that recoveries park in.
+    """
+    fallen = fallen_mask(env, tilt_gate, clearance_gate).bool()
+    up = recovered_mask(env, release_tilt, release_clearance).bool()
+    armed = getattr(env, "_fallen_tax_armed", None)
+    if armed is None:
+        armed = torch.zeros(env.num_envs, dtype=torch.bool, device=env.device)
+        env._fallen_tax_armed = armed
+    armed[_fresh(env)] = False
+    armed |= fallen
+    armed &= ~up
+    return armed.float()
 
-    def reset(self, env_ids=None):
-        if env_ids is None:
-            env_ids = slice(None)
-        self._down_time[env_ids] = 0.0
+
+def recovery_success(
+    env,
+    fallen_tilt=FALLEN_TILT,
+    min_fallen_s=0.5,
+    up_tilt=RECOVERED_TILT,
+    up_clearance=RECOVERED_CLEARANCE,
+):
+    """One-shot bounty for a completed recovery.
+
+    Fires on the frame an environment that has been fallen for at least
+    ``min_fallen_s`` becomes upright and high enough again. Re-arming requires
+    being fallen again, so oscillating around the gate pays nothing.
+    """
+    fallen = total_tilt(env) > fallen_tilt
+    up = recovered_mask(env, up_tilt, up_clearance).bool()
+    seconds = getattr(env, "_recovery_fallen_s", None)
+    if seconds is None:
+        seconds = torch.zeros(env.num_envs, device=env.device)
+        env._recovery_fallen_s = seconds
+        env._recovery_armed = torch.zeros(env.num_envs, dtype=torch.bool, device=env.device)
+    fresh = _fresh(env)
+    seconds[fresh] = 0.0
+    env._recovery_armed[fresh] = False
+    env._recovery_fallen_s = torch.where(
+        fallen, seconds + env.step_dt, torch.zeros_like(seconds)
+    )
+    env._recovery_armed |= env._recovery_fallen_s >= min_fallen_s
+    fired = env._recovery_armed & up
+    env._recovery_armed &= ~fired
+    return fired.float()
+
+
+def folded_pose_error(env, folded=FOLDED_STANCE):
+    """Mean squared deviation of the six leg joints from the folded pose."""
+    asset = env.scene["wheelleg"]
+    ids, _ = asset.find_joints(_LEG_JOINTS, preserve_order=True)
+    joints = asset.data.joint_pos[:, ids]
+    target = joints.new_tensor([folded[0], folded[1], folded[2]] * 2)
+    return torch.mean(torch.square(joints - target), dim=1)
+
+
+def fold_complete(env, folded=FOLDED_STANCE, tolerance=FOLD_TOLERANCE):
+    """True once every leg joint is within ``tolerance`` of the folded pose.
+
+    This is the pose the robot can stand up from, so it is the point at which a
+    recovery window starts being timed.
+    """
+    asset = env.scene["wheelleg"]
+    ids, _ = asset.find_joints(_LEG_JOINTS, preserve_order=True)
+    joints = asset.data.joint_pos[:, ids]
+    target = joints.new_tensor([folded[0], folded[1], folded[2]] * 2)
+    return ((joints - target).abs().amax(dim=1) < tolerance)
+
+
+def fallen_too_long(
+    env,
+    max_down_time=MAX_DOWN_TIME,
+    fold_stand_deadline=FOLD_STAND_DEADLINE,
+    tilt_gate=FALLEN_TILT,
+    clearance_gate=FALLEN_CLEARANCE,
+):
+    """End an episode once the robot is clearly not getting back up.
+
+    Two clocks. The first is a plain backstop on continuous time spent down,
+    without which a failed recovery keeps the episode alive and starves walking
+    of data. The second starts once the legs have folded -- the pose a stand-up
+    begins from -- and allows ``fold_stand_deadline`` seconds to be upright
+    again, so a chassis wedged on a corner is recycled instead of lying there.
+    """
+    down = fallen_mask(env, tilt_gate, clearance_gate).bool()
+    folded = fold_complete(env).bool()
+    down_s = getattr(env, "_down_seconds", None)
+    fold_s = getattr(env, "_fold_seconds", None)
+    if down_s is None:
+        down_s = torch.zeros(env.num_envs, device=env.device)
+        fold_s = torch.zeros(env.num_envs, device=env.device)
+        env._down_seconds = down_s
+        env._fold_seconds = fold_s
+    fresh = _fresh(env)
+    down_s[fresh] = 0.0
+    fold_s[fresh] = 0.0
+    step = env.step_dt
+    env._down_seconds = torch.where(down, down_s + step, torch.zeros_like(down_s))
+    env._fold_seconds = torch.where(
+        down & folded, fold_s + step, torch.zeros_like(fold_s)
+    )
+    return (env._down_seconds >= max_down_time) | (env._fold_seconds >= fold_stand_deadline)
+
+
+def attempt_scale(env, scale=FALLEN_ATTEMPT_SCALE):
+    """Multiplier for attempt taxes: ``scale`` while down, 1 while up.
+
+    Smoothness and joint-limit penalties exist to keep a gait clean. Charging
+    them in full while the robot is trying to stand up prices the attempt above
+    doing nothing, which is how a recovery never gets discovered.
+    """
+    fallen = fallen_mask(env).bool()
+    return torch.where(fallen, torch.full_like(fallen, scale, dtype=torch.float),
+                       torch.ones_like(fallen, dtype=torch.float))
+
+
+def action_rate_fallen_scaled(env, scale=FALLEN_ATTEMPT_SCALE):
+    """mjlab action_rate_l2, reduced while the robot is down."""
+    from mjlab.envs import mdp as envs_mdp  # Lazy: keeps this module mjlab-free.
+
+    return envs_mdp.action_rate_l2(env) * attempt_scale(env, scale)
+
+
+def joint_acc_fallen_scaled(env, asset_cfg=None, scale=FALLEN_ATTEMPT_SCALE):
+    """mjlab joint_acc_l2, reduced while the robot is down."""
+    from mjlab.envs import mdp as envs_mdp
+
+    return envs_mdp.joint_acc_l2(env, asset_cfg=asset_cfg) * attempt_scale(env, scale)
+
+
+def joint_pos_limits_fallen_scaled(env, asset_cfg=None, scale=FALLEN_ATTEMPT_SCALE):
+    """mjlab joint_pos_limits, reduced while the robot is down.
+
+    The folded pose sits on the hard hip and thigh limits, so leaving this at
+    full weight would charge the robot for adopting the very pose it must stand
+    up from.
+    """
+    from mjlab.envs import mdp as envs_mdp
+
+    return envs_mdp.joint_pos_limits(env, asset_cfg=asset_cfg) * attempt_scale(env, scale)
 
 
 def wheeled_stance_locomotion(

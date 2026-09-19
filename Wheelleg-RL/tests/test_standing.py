@@ -45,16 +45,22 @@ def _env(clearances, speeds=None, yaws=None, base_contact=None, air=None,
     return SimpleNamespace(
         num_envs=n,
         step_dt=step_dt,
+        # Not a fresh episode, so per-episode state persists across calls.
+        episode_length_buf=torch.full((n,), 5, dtype=torch.long),
         command_manager=SimpleNamespace(
             get_command=lambda name: torch.tensor([[float(v) for v in c] for c in command])),
         scene={
-            "wheelleg": SimpleNamespace(data=SimpleNamespace(
-                root_link_pos_w=root_z,
-                root_link_lin_vel_b=torch.tensor(
-                    [[float(s), float(y), 0.0] for s, y in zip(speeds, lateral)]),
-                root_link_ang_vel_b=torch.tensor([[0.0, 0.0, float(y)] for y in yaws]),
-                projected_gravity_b=torch.tensor([[float(v) for v in g] for g in gravity]),
-            )),
+            "wheelleg": SimpleNamespace(
+                data=SimpleNamespace(
+                    root_link_pos_w=root_z,
+                    root_link_lin_vel_b=torch.tensor(
+                        [[float(s), float(y), 0.0] for s, y in zip(speeds, lateral)]),
+                    root_link_ang_vel_b=torch.tensor([[0.0, 0.0, float(y)] for y in yaws]),
+                    projected_gravity_b=torch.tensor([[float(v) for v in g] for g in gravity]),
+                    # Legs at zero are nowhere near the folded pose.
+                    joint_pos=torch.zeros(n, 6),
+                ),
+                find_joints=lambda names, preserve_order: (list(range(6)), names)),
             "base_clearance": SimpleNamespace(
                 data=SimpleNamespace(hit_pos_w=hits, distances=distances)),
             "base_ground_contact": SimpleNamespace(
@@ -64,6 +70,12 @@ def _env(clearances, speeds=None, yaws=None, base_contact=None, air=None,
                 found=torch.tensor([[float(v) for v in row] for row in wheel_contact]))),
         },
     )
+
+
+def _set_clearance(env, value, index=0):
+    """Move one environment to a new clearance without rebuilding it."""
+    env.scene["base_clearance"].data.distances[index, 0] = value
+    env.scene["wheelleg"].data.root_link_pos_w[index, 2] = value
 
 
 class ClearanceTests(unittest.TestCase):
@@ -347,6 +359,193 @@ class WheeledStanceLocomotionTests(unittest.TestCase):
         self.assertEqual(reward[0].item(), 0.0)
         self.assertAlmostEqual(reward[1].item(), 0.5, places=6)
         self.assertAlmostEqual(reward[2].item(), 1.0, places=6)
+
+
+class FallenMaskTests(unittest.TestCase):
+    def test_upright_and_high_is_not_fallen(self):
+        env = _env([0.145])
+        self.assertEqual(standing.fallen_mask(env)[0].item(), 0.0)
+        self.assertEqual(standing.recovered_mask(env)[0].item(), 1.0)
+
+    def test_tilt_alone_counts_as_fallen(self):
+        """The box chassis can wedge on a side without the body sensor firing."""
+        import math
+
+        env = _env([0.145], gravity=[(math.sin(1.0), 0.0, -math.cos(1.0))])
+        self.assertEqual(standing.fallen_mask(env)[0].item(), 1.0)
+
+    def test_low_alone_counts_as_fallen(self):
+        env = _env([0.03])
+        self.assertEqual(standing.fallen_mask(env)[0].item(), 1.0)
+
+    def test_a_crouch_below_the_gate_is_not_recovered(self):
+        """A crouch just under the arming gate must not read as standing."""
+        env = _env([0.09])
+        self.assertEqual(standing.fallen_mask(env)[0].item(), 0.0)
+        self.assertEqual(standing.recovered_mask(env)[0].item(), 0.0)
+
+
+class PotentialShapingTests(unittest.TestCase):
+    """Shaping pays for change, never for holding a pose, so it cannot be farmed."""
+
+    def test_rising_pays_and_holding_pays_zero(self):
+        low = _env([0.02])
+        high = _env([0.145])
+        up = standing.height_progress(high)
+        self.assertGreater(up[0].item(), 0.0)
+        # Holding the same height pays exactly nothing on every further step.
+        for _ in range(5):
+            self.assertAlmostEqual(standing.height_progress(high)[0].item(), 0.0, places=9)
+
+    def test_falling_is_charged(self):
+        high = _env([0.145])
+        low = _env([0.02])
+        standing.height_progress(high)
+        self.assertLess(standing.height_progress(low)[0].item(), 0.0)
+
+    def test_upright_progress_pays_for_standing_up(self):
+        import math
+
+        down = _env([0.02], gravity=[(math.sin(1.4), 0.0, -math.cos(1.4))])
+        up = _env([0.145])
+        standing.upright_progress(down)
+        self.assertGreater(standing.upright_progress(up)[0].item(), 0.0)
+
+    def test_a_fresh_episode_does_not_pay_for_the_reset(self):
+        """Otherwise every reset is a free bounty."""
+        env = _env([0.02])
+        env.episode_length_buf = torch.tensor([0])
+        standing.height_progress(env)
+        # The reset teleports the robot up; the first step must not pay for that.
+        _set_clearance(env, 0.145)
+        env.episode_length_buf = torch.tensor([1])
+        self.assertAlmostEqual(standing.height_progress(env)[0].item(), 0.0, places=9)
+
+
+class FallenTaxTests(unittest.TestCase):
+    def test_an_upright_robot_is_never_taxed(self):
+        env = _env([0.145])
+        for _ in range(5):
+            self.assertEqual(standing.fallen_tax(env)[0].item(), 0.0)
+
+    def test_a_fall_arms_the_tax(self):
+        env = _env([0.03])
+        self.assertEqual(standing.fallen_tax(env)[0].item(), 1.0)
+
+    def test_the_tax_has_hysteresis_until_genuinely_up(self):
+        """Otherwise a crouch under the gate becomes a free rest state."""
+        env = _env([0.02])
+        self.assertEqual(standing.fallen_tax(env)[0].item(), 1.0)
+        _set_clearance(env, 0.09)  # crouch: above the arming gate, below recovered
+        self.assertEqual(standing.fallen_mask(env)[0].item(), 0.0)
+        self.assertEqual(standing.fallen_tax(env)[0].item(), 1.0)
+        _set_clearance(env, 0.145)  # genuinely up
+        self.assertEqual(standing.fallen_tax(env)[0].item(), 0.0)
+
+    def test_a_fresh_episode_clears_the_tax(self):
+        env = _env([0.02])
+        standing.fallen_tax(env)
+        env.episode_length_buf = torch.tensor([0])
+        _set_clearance(env, 0.145)
+        self.assertEqual(standing.fallen_tax(env)[0].item(), 0.0)
+
+
+class RecoverySuccessTests(unittest.TestCase):
+    def test_a_completed_recovery_pays_once(self):
+        import math
+
+        down = _env([0.02], gravity=[(math.sin(1.4), 0.0, -math.cos(1.4))])
+        up = _env([0.145])
+        term = standing.recovery_success
+        for _ in range(40):  # 0.8 s fallen, past min_fallen_s
+            term(down, up_clearance=0.11)
+        self.assertEqual(term(up, up_clearance=0.11)[0].item(), 1.0)
+        # Re-arming needs another fall, so oscillating around the gate pays zero.
+        self.assertEqual(term(up, up_clearance=0.11)[0].item(), 0.0)
+
+    def test_being_merely_high_is_not_a_recovery(self):
+        up = _env([0.145])
+        self.assertEqual(standing.recovery_success(up, up_clearance=0.11)[0].item(), 0.0)
+
+
+class FoldedPoseTests(unittest.TestCase):
+    def _folded_env(self, joints):
+        q = torch.tensor([list(joints)])
+        return SimpleNamespace(num_envs=1, scene={"wheelleg": SimpleNamespace(
+            data=SimpleNamespace(joint_pos=q),
+            find_joints=lambda names, preserve_order: (list(range(6)), names))})
+
+    def test_the_folded_pose_reports_complete(self):
+        hip, thigh, knee = standing.FOLDED_STANCE
+        env = self._folded_env([hip, thigh, knee] * 2)
+        self.assertTrue(standing.fold_complete(env)[0].item())
+        self.assertAlmostEqual(standing.folded_pose_error(env)[0].item(), 0.0, places=9)
+
+    def test_a_sprawled_pose_is_not_folded(self):
+        env = self._folded_env([0.0, 0.85, -1.23] * 2)
+        self.assertFalse(standing.fold_complete(env)[0].item())
+        self.assertGreater(standing.folded_pose_error(env)[0].item(), 0.0)
+
+    def test_one_leg_folded_is_not_enough(self):
+        hip, thigh, knee = standing.FOLDED_STANCE
+        env = self._folded_env([hip, thigh, knee, 0.0, 0.85, -1.23])
+        self.assertFalse(standing.fold_complete(env)[0].item())
+
+    def test_the_folded_pose_is_inside_the_joint_limits(self):
+        """The supplied angles are clamped: hip 0.91 and thigh 1.31 are outside."""
+        hip, thigh, knee = standing.FOLDED_STANCE
+        self.assertLessEqual(hip, stance.HIP_LIMIT[1])
+        self.assertLessEqual(thigh, stance.THIGH_LIMIT[1])
+        self.assertGreaterEqual(knee, stance.KNEE_LIMIT[0])
+        self.assertLess(knee, 0.0)
+        # The reported values really were outside, which is why clamping matters.
+        self.assertGreater(0.91, stance.HIP_LIMIT[1])
+        self.assertGreater(1.31, stance.THIGH_LIMIT[1])
+
+
+class FallenTooLongTests(unittest.TestCase):
+    def test_an_upright_robot_never_terminates(self):
+        env = _env([0.145])
+        for _ in range(400):
+            self.assertFalse(standing.fallen_too_long(env, max_down_time=1.0).any().item())
+
+    def test_a_fall_gets_a_window_before_the_backstop(self):
+        env = _env([0.02])
+        seen = [standing.fallen_too_long(env, max_down_time=1.0).item() for _ in range(60)]
+        self.assertFalse(any(seen[:40]))  # 0.8 s down is still allowed
+        self.assertTrue(seen[-1])         # 1.2 s down: recycled
+
+    def test_folding_starts_the_stand_up_deadline(self):
+        """Once the legs are folded the robot gets 2 s to be upright again."""
+        hip, thigh, knee = standing.FOLDED_STANCE
+        env = _env([0.02])
+        env.scene["wheelleg"].data.joint_pos = torch.tensor([[hip, thigh, knee] * 2])
+        seen = [standing.fallen_too_long(env, max_down_time=99.0).item() for _ in range(140)]
+        # 2 s at 20 ms is 100 steps; nothing before that, then it fires.
+        self.assertFalse(any(seen[:95]))
+        self.assertTrue(seen[-1])
+
+    def test_a_jammed_fall_that_never_folds_hits_the_backstop(self):
+        """Legs never reach the folded pose, so only the down timer applies."""
+        env = _env([0.02])  # joint_pos stays at zero: nowhere near folded
+        seen = [standing.fallen_too_long(env, max_down_time=1.0).item() for _ in range(60)]
+        self.assertFalse(any(seen[:40]))
+        self.assertTrue(seen[-1])
+
+    def test_standing_up_clears_both_clocks(self):
+        down = _env([0.02])
+        standing.fallen_too_long(down, max_down_time=1.0)
+        up = _env([0.145])
+        self.assertFalse(standing.fallen_too_long(up, max_down_time=1.0).item())
+
+
+class AttemptScaleTests(unittest.TestCase):
+    def test_attempt_taxes_are_reduced_while_down(self):
+        self.assertAlmostEqual(standing.attempt_scale(_env([0.03]))[0].item(),
+                               standing.FALLEN_ATTEMPT_SCALE, places=9)
+
+    def test_attempt_taxes_are_full_while_up(self):
+        self.assertAlmostEqual(standing.attempt_scale(_env([0.145]))[0].item(), 1.0, places=9)
 
 
 class BodyLevelTests(unittest.TestCase):
