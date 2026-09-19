@@ -252,3 +252,32 @@ FOLDED_REST_Z = 0.002
 CROUCH_STANCE = (0.4538, 1.0776, -1.9267)
 CROUCH_SPAWN_Z = clearance(CROUCH_STANCE[1], CROUCH_STANCE[2], CROUCH_STANCE[0])
 SPAWN_MARGIN = 0.002
+
+# ---------------------------------------------------------------------------
+# Left/right expansion: the single place the mirror convention lives.
+#
+# The model does *not* mirror the hip axes -- both ``*_hip_joint`` rotate about
+# +X -- so one shared hip angle rolls both legs the same way in world space: the
+# left wheel tucks up while the right one extends, and the body is pushed into a
+# skew it cannot lie flat out of. A visually symmetric pose needs the right hip
+# negated. The thigh and knee axes are both +Y, where a shared angle *is* mirror
+# symmetric because that rotation does not involve the lateral offset, so those
+# keep their sign. ``standing.leg_symmetry_error`` already tests the hip as a
+# *sum* for exactly this reason; expanding a stance as ``pose * 2`` silently
+# violated it and made the commanded folded pose itself asymmetric.
+#
+# The single-leg geometry above cannot see the mistake: mirroring flips y and
+# leaves z exactly unchanged, so a clearance check passes either way. Only the
+# lateral placement -- and therefore whether the body rests flat on the ground or
+# is wedged on one edge -- is affected.
+# ---------------------------------------------------------------------------
+HIP_MIRROR = (1.0, -1.0)
+
+
+def leg_joint_positions(pose) -> tuple[float, float, float, float, float, float]:
+    """Expand a (hip, thigh, knee) leg pose into six left/right joint targets.
+
+    Order matches ``standing._LEG_JOINTS``: left hip, thigh, knee, then right.
+    """
+    hip, thigh, knee = pose
+    return (hip * HIP_MIRROR[0], thigh, knee, hip * HIP_MIRROR[1], thigh, knee)

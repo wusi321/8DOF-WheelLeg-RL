@@ -32,6 +32,7 @@ from ..stance import (
     NOMINAL_STANCE,
     SPAWN_MARGIN,
     STANDING_CLEARANCE,
+    leg_joint_positions,
 )
 
 # Sentinel returned when the ray finds no ground. It is deliberately negative so
@@ -309,7 +310,7 @@ def standing_pose_error(env):
     asset = env.scene["wheelleg"]
     ids, _ = asset.find_joints(_LEG_JOINTS, preserve_order=True)
     joints = asset.data.joint_pos[:, ids]
-    target = joints.new_tensor([NOMINAL_STANCE[0], NOMINAL_STANCE[1], NOMINAL_STANCE[2]] * 2)
+    target = joints.new_tensor(leg_joint_positions(NOMINAL_STANCE))
     return torch.mean(torch.square(joints - target), dim=1)
 
 
@@ -606,7 +607,7 @@ def folded_pose_error(env, folded=FOLDED_STANCE):
     asset = env.scene["wheelleg"]
     ids, _ = asset.find_joints(_LEG_JOINTS, preserve_order=True)
     joints = asset.data.joint_pos[:, ids]
-    target = joints.new_tensor([folded[0], folded[1], folded[2]] * 2)
+    target = joints.new_tensor(leg_joint_positions(folded))
     return torch.mean(torch.square(joints - target), dim=1)
 
 
@@ -619,7 +620,7 @@ def fold_complete(env, folded=FOLDED_STANCE, tolerance=FOLD_TOLERANCE):
     asset = env.scene["wheelleg"]
     ids, _ = asset.find_joints(_LEG_JOINTS, preserve_order=True)
     joints = asset.data.joint_pos[:, ids]
-    target = joints.new_tensor([folded[0], folded[1], folded[2]] * 2)
+    target = joints.new_tensor(leg_joint_positions(folded))
     return ((joints - target).abs().amax(dim=1) < tolerance)
 
 
@@ -713,8 +714,9 @@ def body_level_error_recovery_scaled(env, scale=FALLEN_ATTEMPT_SCALE, **kwargs):
 def spawn_fallen_state(
     env,
     env_ids=None,
-    folded_probability=0.5,
-    crouch_probability=0.25,
+    folded_probability=0.35,
+    crouch_probability=0.15,
+    folded_hold_probability=0.5,
     asset_cfg=None,
 ):
     """Reset a slice of episodes already on the ground: reverse-curriculum spawns.
@@ -726,11 +728,25 @@ def spawn_fallen_state(
     VelStand notes reach the same conclusion, calling prone and mid-recovery
     spawns "the reliable fix for learns-the-start-never-the-last-mile".
 
+    The remaining share is a plain standing start, and it is the largest one.
+    Balance and travel are what the machine is for: a spawn mix that begins most
+    episodes on the ground starves the walking data every other reward term is
+    written for, which is how one tilt penalty came to dominate the economy.
+
     ``folded_probability`` starts episodes in the fully folded pose from
-    完全趴下落地.txt, the pose the supplied get-up begins from;
-    ``crouch_probability`` starts them halfway up, which is where the last mile
-    of a stand-up lives and where a policy trained only from prone rarely finds
-    itself.
+    完全趴下落地.txt; ``crouch_probability`` starts them halfway up, which is
+    where the last mile of a stand-up lives and where a policy trained only from
+    prone rarely finds itself.
+
+    Each spawn also *chooses the posture command* it is about to be given,
+    through ``env._spawn_posture``. That coupling is not cosmetic: the event
+    manager runs before the command manager inside ``_reset_idx``, so without it
+    the two are drawn independently and a standing spawn is handed a folded
+    command most of the time -- at which point the action offset drags its legs
+    out from under it and it face-plants on the first step. A folded spawn is
+    told to stand (the get-up task) with probability ``1 - folded_hold_probability``
+    and to stay folded otherwise, which is what trains the flat, wheels-stowed
+    pose itself.
     """
     from mjlab.envs.mdp.events import resolve_env_ids  # Lazy: keeps this pure.
 
@@ -743,6 +759,18 @@ def spawn_fallen_state(
     folded = draw < folded_probability
     crouch = (draw >= folded_probability) & (draw < folded_probability + crouch_probability)
     selected = folded | crouch
+
+    # Tell each spawn which posture it will be commanded into. Everything except
+    # a folded spawn held flat is told to stand, including the standing spawns.
+    if not hasattr(env, "_spawn_posture"):
+        env._spawn_posture = torch.full(
+            (env.num_envs,), float("nan"), device=env.device
+        )
+    hold = torch.rand(len(env_ids), device=env.device) < folded_hold_probability
+    env._spawn_posture[env_ids] = torch.where(
+        folded & hold, torch.zeros_like(draw), torch.ones_like(draw)
+    )
+
     if not bool(selected.any()):
         return
     chosen = env_ids[selected]
@@ -750,12 +778,8 @@ def spawn_fallen_state(
 
     leg_ids, _ = asset.find_joints(_LEG_JOINTS, preserve_order=True)
     leg_ids = torch.tensor(leg_ids, device=env.device, dtype=torch.long)
-    folded_pose = torch.tensor(
-        [FOLDED_STANCE[0], FOLDED_STANCE[1], FOLDED_STANCE[2]] * 2, device=env.device
-    )
-    crouch_pose = torch.tensor(
-        [CROUCH_STANCE[0], CROUCH_STANCE[1], CROUCH_STANCE[2]] * 2, device=env.device
-    )
+    folded_pose = torch.tensor(leg_joint_positions(FOLDED_STANCE), device=env.device)
+    crouch_pose = torch.tensor(leg_joint_positions(CROUCH_STANCE), device=env.device)
     joint_pos = torch.where(is_folded.unsqueeze(1), folded_pose, crouch_pose)
     asset.write_joint_state_to_sim(
         joint_pos, torch.zeros_like(joint_pos), env_ids=chosen, joint_ids=leg_ids

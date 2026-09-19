@@ -22,8 +22,9 @@ def _posture_command(cfg):
     """
     cfg.commands[POSTURE_COMMAND_NAME] = PostureCommandCfg(
         resampling_time_range=(5.0, 10.0),
-        folded_fraction=0.35,
-        standing_fraction=0.35,
+        folded_fraction=0.30,
+        standing_fraction=0.45,
+        transition_rate=2.0,
     )
     # The actor must see the command: it cannot observe its own height, so a
     # posture that depended on state alone would be invisible to the policy.
@@ -82,12 +83,19 @@ def _posture_contract(cfg, enforce_standing=True):
     # standing, falls at once, and never observes the successful stand-up branch,
     # so the progress potentials have no positive side to discover. This is the
     # MicroDuck VelStand fix for "learns the start, never the last mile".
+    #
+    # The standing share is the largest one on purpose: balance and travel are
+    # what the machine is for, and a mix that starts most episodes on the ground
+    # starves the walking data every other reward term is written for. Each spawn
+    # also dictates the posture command it will be given, so a standing start is
+    # never handed a folded command and dragged over on its first step.
     cfg.events["spawn_fallen"] = EventTermCfg(
         func=standing.spawn_fallen_state,
         mode="reset",
         params={
-            "folded_probability": 0.5,
-            "crouch_probability": 0.25,
+            "folded_probability": 0.35,
+            "crouch_probability": 0.15,
+            "folded_hold_probability": 0.5,
             "asset_cfg": SceneEntityCfg("wheelleg"),
         },
     )

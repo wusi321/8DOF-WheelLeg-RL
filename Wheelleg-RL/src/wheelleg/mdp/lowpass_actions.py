@@ -207,17 +207,38 @@ class PostureOffsetPositionAction(JointPositionDelayedLowPassAction):
         self._folded_offset = self._folded_for_targets()
 
     def _folded_for_targets(self) -> torch.Tensor:
-        """Folded leg angles for this term's targets, by joint name."""
-        from ..stance import FOLDED_STANCE
+        """Folded leg angles for this term's targets, by joint name.
 
-        by_kind = {"hip": FOLDED_STANCE[0], "thigh": FOLDED_STANCE[1], "knee": FOLDED_STANCE[2]}
+        The right hip is negated. The two hip axes point the same way in the
+        model, so one shared angle tucks the left wheel up and pushes the right
+        one down, which skews the body instead of folding it. See
+        ``stance.leg_joint_positions``, which owns the convention. A hip target
+        whose side cannot be read raises rather than silently falling back to the
+        sign that caused the skew.
+        """
+        from ..stance import FOLDED_STANCE, HIP_MIRROR
+
+        by_kind = {"hip": 0, "thigh": 1, "knee": 2}
         values = []
         for name in self._target_names:
             angle = 0.0
-            for kind, folded in by_kind.items():
-                if f"_{kind}_" in name:
-                    angle = folded
-                    break
+            for kind, index in by_kind.items():
+                if f"_{kind}_" not in name:
+                    continue
+                if kind == "hip":
+                    if f"left_{kind}_" in name:
+                        side = 0
+                    elif f"right_{kind}_" in name:
+                        side = 1
+                    else:
+                        raise ValueError(
+                            f"cannot tell which side {name!r} is on, and the hip "
+                            "sign depends on it"
+                        )
+                    angle = FOLDED_STANCE[index] * HIP_MIRROR[side]
+                else:
+                    angle = FOLDED_STANCE[index]
+                break
             values.append(angle)
         return torch.tensor(values, device=self.device, dtype=self._offset.dtype).expand(
             self.num_envs, -1

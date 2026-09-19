@@ -32,7 +32,7 @@ import torch
 
 from mjlab.managers.command_manager import CommandTerm, CommandTermCfg
 
-from ..stance import CROUCH_STANCE, FOLDED_STANCE, NOMINAL_STANCE
+from ..stance import CROUCH_STANCE, FOLDED_STANCE, NOMINAL_STANCE, leg_joint_positions
 
 POSTURE_COMMAND_NAME = "posture"
 
@@ -51,10 +51,16 @@ class PostureCommandCfg(CommandTermCfg):
   either end and both are the states that actually have to be learned. The rest
   are uniform in between, which is the richer part of the curriculum: the way up
   from lying flat is a path the policy has to discover.
+
+  The standing share is the larger one: balance and travel are what the machine
+  is for, and a command mix that spends most of its time on the ground starves
+  the walking data the rest of the reward is written for.
   """
 
-  folded_fraction: float = 0.35
-  standing_fraction: float = 0.35
+  folded_fraction: float = 0.30
+  standing_fraction: float = 0.45
+  transition_rate: float = 2.0
+  """How fast the commanded posture may travel, in alpha per second."""
 
   def build(self, env) -> PostureCommand:
     return PostureCommand(self, env)
@@ -65,7 +71,9 @@ class PostureCommand(CommandTerm):
 
   def __init__(self, cfg: PostureCommandCfg, env):
     super().__init__(cfg, env)
+    self._env = env
     self.alpha = torch.zeros(self.num_envs, device=self.device)
+    self._target = torch.zeros(self.num_envs, device=self.device)
     self._resample_command(torch.arange(self.num_envs, device=self.device))
 
   @property
@@ -76,9 +84,10 @@ class PostureCommand(CommandTerm):
   def _update_metrics(self) -> None:
     """Publish the commanded posture for logging.
 
-    ``CommandTerm.reset`` takes the mean over environments of each metric and
-    then zeroes it, so overwriting here reports the mean commanded posture across
-    environments at the end of the logging window, which is what is worth seeing.
+    Note what this does *not* report: ``CommandTerm.reset`` averages a metric
+    over the environments that reset at that step, so the logged value is a
+    handful of environments, not the fleet. It swings between 0 and 1 for that
+    reason alone and is not comparable across runs.
     """
     self.metrics["posture_alpha"] = self.alpha
 
@@ -90,10 +99,37 @@ class PostureCommand(CommandTerm):
     value = torch.rand(count, device=self.device)
     value = torch.where(folded, torch.zeros_like(value), value)
     value = torch.where(standing, torch.ones_like(value), value)
+
+    # The pose an environment was just spawned in decides its first command. The
+    # event manager runs before this term inside ``_reset_idx``, so a spawn can
+    # leave the posture its pose implies; without that coupling the two are drawn
+    # independently and a standing spawn is handed a folded command about two
+    # times in three, at which point the action offset drags its legs out from
+    # under it on the very first step. That is a guaranteed face-plant, and it
+    # taught the policy that standing is hopeless. The flag is consumed here so
+    # later resamples mid-episode are free again.
+    forced = getattr(self._env, "_spawn_posture", None)
+    if forced is not None:
+      override = forced[env_ids]
+      value = torch.where(torch.isnan(override), value, override)
+      forced[env_ids] = float("nan")
+    self._target[env_ids] = value
+    # Start *at* the spawned posture: a ramp from a stale value would move the
+    # legs before the episode has begun.
     self.alpha[env_ids] = value
 
   def _update_command(self) -> None:
-    """Nothing to integrate: the posture is held until it is resampled."""
+    """Ramp the commanded posture towards its target instead of jumping.
+
+    A step change in alpha moves every leg target discontinuously, so the legs
+    snap to the new pose and the robot topples -- which the policy cannot tell
+    apart from "this task is impossible". Rate-limiting makes both directions a
+    reachable trajectory it can keep balance through, and turns "lie down from
+    standing" into a skill rather than a fall.
+    """
+    step = self.cfg.transition_rate * self._env.step_dt
+    delta = torch.clamp(self._target - self.alpha, -step, step)
+    self.alpha[:] = self.alpha + delta
 
 
 def posture_alpha(env, command_name: str = POSTURE_COMMAND_NAME) -> torch.Tensor:
@@ -105,10 +141,12 @@ def target_joint_pos(alpha: torch.Tensor, device=None) -> torch.Tensor:
   """[B, 6] leg joint targets for a commanded posture.
 
   Order is left hip, thigh, knee, right hip, thigh, knee, matching
-  ``standing._LEG_JOINTS``.
+  ``standing._LEG_JOINTS``. The expansion goes through ``leg_joint_positions``
+  so the right hip is negated: the hip axes are not mirrored in the model.
   """
-  folded = torch.tensor([FOLDED_STANCE * 2], device=device or alpha.device, dtype=alpha.dtype)
-  standing = torch.tensor([NOMINAL_STANCE * 2], device=device or alpha.device, dtype=alpha.dtype)
+  where = device or alpha.device
+  folded = torch.tensor([leg_joint_positions(FOLDED_STANCE)], device=where, dtype=alpha.dtype)
+  standing = torch.tensor([leg_joint_positions(NOMINAL_STANCE)], device=where, dtype=alpha.dtype)
   blend = alpha.unsqueeze(-1)
   return folded + (standing - folded) * blend
 

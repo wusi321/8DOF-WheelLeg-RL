@@ -191,6 +191,75 @@ class EnvironmentConfigTests(unittest.TestCase):
             self.assertIsNotNone(match, f"{name} is missing")
             self.assertLessEqual(float(match.group(1)), 3.0)
 
+    def test_leg_joint_positions_mirrors_the_hip(self):
+        """The hip axes are not mirrored in the model, so the right hip is negated.
+
+        Both ``*_hip_joint`` rotate about +X, so one shared angle tucks the left
+        wheel up and drives the right one down: the body is skewed rather than
+        folded, and it cannot lie flat. ``leg_symmetry_error`` already tests the
+        hip as a *sum* for the same reason.
+        """
+        pose = stance.FOLDED_STANCE
+        left_hip, left_thigh, left_knee, right_hip, right_thigh, right_knee = (
+            stance.leg_joint_positions(pose)
+        )
+        self.assertAlmostEqual(left_hip, pose[0])
+        self.assertAlmostEqual(right_hip, -pose[0])
+        # The sum the symmetry reward measures must vanish for a folded robot.
+        self.assertAlmostEqual(left_hip + right_hip, 0.0)
+        # Thigh and knee axes are +Y on both sides, where a shared angle is
+        # already mirror-symmetric, so those keep their sign.
+        self.assertAlmostEqual(left_thigh, right_thigh)
+        self.assertAlmostEqual(left_knee, right_knee)
+
+    def test_mirrored_fold_lands_both_wheels_at_equal_height(self):
+        """Why the negated hip is the right convention, shown on the rotation.
+
+        A hip angle rotates a point (y, z) of the leg about +X. Mirroring the
+        whole leg means y -> -y *and* the angle -> -angle, and that pair leaves z
+        untouched while flipping y. So the negated hip puts both wheels at the
+        same height and opposite lateral offset -- a fold -- whereas the shared
+        sign puts one wheel up and the other down.
+        """
+        hip = stance.FOLDED_STANCE[0]
+        point = (0.0, 0.05, -0.06)  # a wheel-ish point in the left hip frame
+        left = stance._rot_x(point, hip)
+        mirrored = stance._rot_x((0.0, -point[1], point[2]), -hip)
+        self.assertAlmostEqual(left[2], mirrored[2], places=12)
+
+        # The bug: the same angle on the right leg does not do this.
+        same_sign = stance._rot_x((0.0, -point[1], point[2]), hip)
+        self.assertNotAlmostEqual(left[2], same_sign[2], places=3)
+
+    def test_no_stance_is_expanded_by_duplication(self):
+        """``pose * 2`` is the bug this convention exists to prevent."""
+        for rel in (
+            "src/wheelleg/mdp/standing.py",
+            "src/wheelleg/mdp/posture.py",
+            "src/wheelleg/mdp/lowpass_actions.py",
+            "src/wheelleg/config/env_cfgs.py",
+        ):
+            source = (root / rel).read_text(encoding="utf-8")
+            self.assertNotIn("STANCE[0], NOMINAL_STANCE[1]", source)
+            self.assertNotIn("[folded[0], folded[1], folded[2]] * 2", source)
+            self.assertNotIn("FOLDED_STANCE * 2", source)
+
+    def test_every_spawn_dictates_the_posture_it_is_given(self):
+        """The event manager runs before the command manager, so they must couple.
+
+        Without it a standing spawn is handed a folded command about two times in
+        three, and the action offset drags its legs out on the first step.
+        """
+        source = (root / "src/wheelleg/mdp/standing.py").read_text(encoding="utf-8")
+        self.assertIn("env._spawn_posture[env_ids] = torch.where(", source)
+        posture = (root / "src/wheelleg/mdp/posture.py").read_text(encoding="utf-8")
+        self.assertIn('forced = getattr(self._env, "_spawn_posture", None)', posture)
+        # Consumed, so a mid-episode resample is a free draw again.
+        self.assertIn('forced[env_ids] = float("nan")', posture)
+        # And the posture must travel rather than jump.
+        self.assertIn("def _update_command", posture)
+        self.assertIn("torch.clamp(self._target - self.alpha, -step, step)", posture)
+
     def test_terrain_difficulty_never_starts_at_zero(self):
         """Difficulty 0 makes obstacle terrains literally flat."""
         source = (root / "src/wheelleg/config/env_cfgs.py").read_text(encoding="utf-8")
