@@ -164,6 +164,24 @@ def crouch_gate(env, reference=CROUCH_SPEED_REFERENCE):
     return torch.clamp(torch.abs(forward_speed(env)) / reference, 0.0, 1.0)
 
 
+def standing_command(env, command_name="posture"):
+    """1 when standing is commanded, 0 when lying folded is commanded.
+
+    The gait penalties and the fall deadlines belong to the *locomotion* posture.
+    A robot that was told to lie down is not falling: charging it a crawl penalty
+    or recycling it for being on the ground would make the commanded posture
+    impossible to hold.
+    """
+    from .posture import posture_alpha  # Local: posture pulls in mjlab.
+
+    return posture_alpha(env, command_name)
+
+
+def gait_gate(env, command_name="posture", **fallen_kwargs):
+    """1 only while the robot is both standing-commanded and genuinely up."""
+    return upright_gate(env, **fallen_kwargs) * standing_command(env, command_name)
+
+
 def effective_min_clearance(env, min_clearance=MIN_CLEARANCE):
     """Clearance required while moving, relaxed at speed by the crouch allowance."""
     return min_clearance - CROUCH_CLEARANCE_DROP * crouch_gate(env)
@@ -194,17 +212,22 @@ def low_posture_locomotion(
     clearance = base_clearance(env)
     deficit = torch.clamp((floor - clearance) / floor, 0.0, 1.0)
     deficit = torch.where(_measurable(clearance), deficit, torch.zeros_like(deficit))
-    return deficit * moving_gate(env, linear_speed, yaw_rate) * upright_gate(env)
+    return deficit * moving_gate(env, linear_speed, yaw_rate) * gait_gate(env)
 
 
 def standing_height_error(env, target_height=STANDING_CLEARANCE):
-    """Normalised squared deviation from the working stance height.
+    """Normalised squared deviation from the height the *commanded* posture wants.
 
     Always active, so a low posture is mildly discouraged and lying on the ground
-    is expensive, without ever ending the episode. The target drops at speed so a
-    high-speed crouch is not charged as a posture error.
+    is expensive, without ever ending the episode. The standing target drops at
+    speed so a high-speed crouch is not charged as a posture error, and the whole
+    target blends down to the folded body's rest height when lying down is
+    commanded -- otherwise a folded robot would be punished for being low, which
+    is exactly what it was told to be.
     """
-    target = effective_target_height(env, target_height)
+    from .posture import posture_height_target  # Local: posture pulls in mjlab.
+
+    target = posture_height_target(env, effective_target_height(env, target_height))
     clearance = torch.clamp(base_clearance(env), min=0.0)
     return torch.square((clearance - target) / target)
 
@@ -296,7 +319,7 @@ def base_ground_contact_cost(env):
     for being on the ground; the height error and the tilt cost already cover that.
     """
     tilted = total_tilt(env) > FALLEN_TILT
-    return base_ground_contact(env).float() * (~tilted).float()
+    return base_ground_contact(env).float() * (~tilted).float() * standing_command(env)
 
 
 def wheel_air_time(env, sensor_name="feet_ground_contact"):
@@ -334,7 +357,7 @@ def no_wheel_support(
     posture choice.
     """
     excess = torch.clamp(wheel_support_time(env, sensor_name) - allowance, min=0.0)
-    return torch.clamp(excess / horizon, 0.0, 1.0) * upright_gate(env)
+    return torch.clamp(excess / horizon, 0.0, 1.0) * gait_gate(env)
 
 
 def wheel_contact_fraction(env, sensor_name="feet_ground_contact"):
@@ -526,7 +549,8 @@ def fallen_tax(
     armed[_fresh(env)] = False
     armed |= fallen
     armed &= ~up
-    return armed.float()
+    # Being on the ground is not a fault when lying down was commanded.
+    return armed.float() * standing_command(env)
 
 
 def recovery_success(
@@ -600,6 +624,8 @@ def fallen_too_long(
     """
     down = fallen_mask(env, tilt_gate, clearance_gate).bool()
     folded = fold_complete(env).bool()
+    # A robot told to lie down is not failing to get up.
+    commanded_down = down & (standing_command(env) > 0.5)
     down_s = getattr(env, "_down_seconds", None)
     fold_s = getattr(env, "_fold_seconds", None)
     if down_s is None:
@@ -611,9 +637,11 @@ def fallen_too_long(
     down_s[fresh] = 0.0
     fold_s[fresh] = 0.0
     step = env.step_dt
-    env._down_seconds = torch.where(down, down_s + step, torch.zeros_like(down_s))
+    env._down_seconds = torch.where(
+        commanded_down, down_s + step, torch.zeros_like(down_s)
+    )
     env._fold_seconds = torch.where(
-        down & folded, fold_s + step, torch.zeros_like(fold_s)
+        commanded_down & folded, fold_s + step, torch.zeros_like(fold_s)
     )
     return (env._down_seconds >= max_down_time) | (env._fold_seconds >= fold_stand_deadline)
 

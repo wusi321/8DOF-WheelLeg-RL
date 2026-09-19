@@ -173,9 +173,40 @@ class EnvironmentConfigTests(unittest.TestCase):
         """Being down must not stack crawl, support, contact and tilt penalties."""
         source = (root / "src/wheelleg/mdp/standing.py").read_text(encoding="utf-8")
         self.assertIn("def upright_gate", source)
+        self.assertIn("def gait_gate", source)
         # The crawl and support penalties are suspended once the robot is down.
-        self.assertIn("* upright_gate(env)", source)
+        self.assertIn("* gait_gate(env)", source)
         self.assertIn("MAX_TILT_COST", source)
+
+    def test_one_fallen_definition_only(self):
+        """Two definitions let a low robot keep paying the crawl penalty."""
+        source = (root / "src/wheelleg/mdp/standing.py").read_text(encoding="utf-8")
+        self.assertIn("FALLEN_TILT", source)
+        self.assertIn("FALLEN_CLEARANCE", source)
+        # The old second definition must be gone.
+        self.assertNotIn("DOWN_TILT_LIMIT", source)
+        # is_down must delegate to fallen_mask rather than re-deriving a gate.
+        self.assertIn("return fallen_mask(env, tilt_limit, clearance_gate).bool()", source)
+
+    def test_posture_command_drives_the_action_offset(self):
+        """Option A: zero action must mean the commanded posture, not the stance."""
+        cfg = (root / "src/wheelleg/config/env_cfgs.py").read_text(encoding="utf-8")
+        self.assertIn("PostureCommandCfg", cfg)
+        self.assertIn("PostureOffsetPositionActionCfg", cfg)
+        self.assertIn("posture_command_name=POSTURE_COMMAND_NAME", cfg)
+        self.assertIn("def _posture_command", cfg)
+        # Both tasks must install it.
+        self.assertIn("_posture_command(_posture_contract", cfg)
+        # And the command must be observed, or the policy cannot know its mapping.
+        self.assertIn('for group in ("actor", "critic")', cfg)
+
+    def test_gait_rules_are_gated_by_the_commanded_posture(self):
+        """A robot told to lie down is not falling and is not crawling."""
+        source = (root / "src/wheelleg/mdp/standing.py").read_text(encoding="utf-8")
+        self.assertIn("def standing_command", source)
+        self.assertIn("standing_command(env) > 0.5", source)
+        # The fall tax and the body-contact cost fold the command in too.
+        self.assertIn("* standing_command(env)", source)
 
     def test_terrain_curriculum_uses_path_length_not_net_displacement(self):
         """Circling under heading commands demotes a walking robot every episode."""

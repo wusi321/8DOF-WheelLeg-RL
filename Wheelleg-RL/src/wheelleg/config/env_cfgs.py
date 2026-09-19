@@ -5,6 +5,44 @@ from ..robot_cfg import get_robot_cfg
 from ..stance import MIN_CLEARANCE, STANDING_CLEARANCE
 from ..mdp import standing
 from ..mdp.curriculums import PathLength
+from ..mdp.lowpass_actions import PostureOffsetPositionActionCfg
+from ..mdp.posture import POSTURE_COMMAND_NAME, PostureCommandCfg, posture_pose_error
+
+
+def _posture_command(cfg):
+    """Add the commanded posture and make the leg action follow it.
+
+    The leg action is a delta from the standing stance, with a scale of 0.125 rad
+    for the hip and 0.25 for the thigh and knee, so commanding the folded pose
+    from there needs raw actions of +7.26 / -5.55 against an initial action std
+    of 0.80. The policy therefore cannot choose to fold, and a folded spawn only
+    lasts until the actuators drag the legs back to the stance. With the offset
+    following the command, zero action means "hold the commanded posture" and
+    both lying down and standing up become small-correction problems.
+    """
+    cfg.commands[POSTURE_COMMAND_NAME] = PostureCommandCfg(
+        resampling_time_range=(5.0, 10.0),
+        folded_fraction=0.35,
+        standing_fraction=0.35,
+    )
+    # The actor must see the command: it cannot observe its own height, so a
+    # posture that depended on state alone would be invisible to the policy.
+    for group in ("actor", "critic"):
+        cfg.observations[group].terms[POSTURE_COMMAND_NAME] = ObservationTermCfg(
+            func=velocity_mdp.generated_commands,
+            params={"command_name": POSTURE_COMMAND_NAME},
+        )
+    cfg.actions["leg_joint_pos"] = PostureOffsetPositionActionCfg(
+        entity_name="wheelleg",
+        actuator_names=("(left|right)_hip_joint", "(left|right)_thigh_joint",
+                        "(left|right)_knee_joint"),
+        scale={".*_hip_joint": 0.125, "^(?!.*_hip_joint).*": 0.25},
+        use_default_offset=True,
+        control_frequency=50.0, cut_off_frequency=5.0,
+        min_delay=0, max_delay=2,
+        posture_command_name=POSTURE_COMMAND_NAME,
+    )
+    return cfg
 
 
 def _posture_contract(cfg, enforce_standing=True):
@@ -119,6 +157,10 @@ def _posture_contract(cfg, enforce_standing=True):
                 "uneven_reference": standing.UNEVEN_HEIGHT_REFERENCE,
             },
         )
+        # Pose tracking towards the *commanded* posture, not a fixed stance: a
+        # folded-commanded robot has to be allowed, and required, to stay folded.
+        cfg.rewards["posture_pose"] = RewardTermCfg(
+            func=posture_pose_error, weight=-2.0)
         # Keep the body's z axis vertical instead of letting it follow the slope.
         # Ramped linearly in radians so it can actually pull back the steady tilt
         # that rolling along a bank produces; a squared cost is flat near upright.
@@ -133,6 +175,8 @@ def _posture_contract(cfg, enforce_standing=True):
         )
         cfg.rewards["standing_pose"] = RewardTermCfg(
             func=standing.standing_pose_error, weight=-0.5)
+        # `joint_pos_limits` matters here: the folded pose sits on the hip and
+        # thigh hard limits, so it is scaled while down (above).
 
         # -- Fall recovery, following the VelStand task in the MicroDuck
         # reference. Rising pays and holding pays zero, so none of it can be
@@ -233,7 +277,7 @@ def _adapt(cfg, play=False):
 
 
 def flat_env_cfg(play=False):
-    return _posture_contract(_adapt(_base_flat_env_cfg(play=False), play))
+    return _posture_command(_posture_contract(_adapt(_base_flat_env_cfg(play=False), play)))
 
 
 def rough_env_cfg(play=False, enforce_standing=True):
@@ -266,7 +310,7 @@ def rough_env_cfg(play=False, enforce_standing=True):
     # PathLength feeds the terrain curriculum, which only advances when the robot
     # actually travels; see the note in terrain_levels_vel_strict.
     cfg.metrics["path_length_m"] = MetricsTermCfg(func=PathLength)
-    return _posture_contract(_adapt(cfg, play), enforce_standing)
+    return _posture_command(_posture_contract(_adapt(cfg, play), enforce_standing))
 
 
 def recovery_env_cfg(play=False):

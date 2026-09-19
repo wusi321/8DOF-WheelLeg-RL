@@ -175,6 +175,70 @@ class JointPositionDelayedLowPassAction(JointPositionLowPassAction):
 
 
 @dataclass(kw_only=True)
+class PostureOffsetPositionActionCfg(JointPositionDelayedLowPassActionCfg):
+    """Joint position action whose default offset follows a commanded posture.
+
+    The action target is ``offset + raw * scale``. With the offset pinned to the
+    standing stance (the stock behaviour) the folded pose sits seven to nine
+    action sigmas away and the policy can never choose to fold. Here the offset
+    instead interpolates between the folded pose and the standing stance
+    according to the ``posture`` command, so zero action means "hold whatever
+    posture was asked for" and only the corrections have to be learned.
+
+    Set ``posture_command_name`` to ``None`` to fall back to the stock fixed
+    offset.
+    """
+
+    posture_command_name: str | None = "posture"
+
+    def build(self, env: ManagerBasedRlEnv) -> PostureOffsetPositionAction:
+        return PostureOffsetPositionAction(self, env)
+
+
+class PostureOffsetPositionAction(JointPositionDelayedLowPassAction):
+    """Interpolates the position offset between folded and standing each step."""
+
+    def __init__(self, cfg: PostureOffsetPositionActionCfg, env: ManagerBasedRlEnv):
+        super().__init__(cfg, env)
+        self._posture_name = cfg.posture_command_name
+        # The stock class already put the nominal stance in self._offset; keep it
+        # as the alpha = 1 end of the interpolation.
+        self._standing_offset = self._offset.clone()
+        self._folded_offset = self._folded_for_targets()
+
+    def _folded_for_targets(self) -> torch.Tensor:
+        """Folded leg angles for this term's targets, by joint name."""
+        from ..stance import FOLDED_STANCE
+
+        by_kind = {"hip": FOLDED_STANCE[0], "thigh": FOLDED_STANCE[1], "knee": FOLDED_STANCE[2]}
+        values = []
+        for name in self._target_names:
+            angle = 0.0
+            for kind, folded in by_kind.items():
+                if f"_{kind}_" in name:
+                    angle = folded
+                    break
+            values.append(angle)
+        return torch.tensor(values, device=self.device, dtype=self._offset.dtype).expand(
+            self.num_envs, -1
+        )
+
+    def _sync_offset(self) -> None:
+        if self._posture_name is None:
+            return
+        alpha = self._env.command_manager.get_term(self._posture_name).alpha.unsqueeze(-1)
+        self._offset[:] = self._folded_offset + (self._standing_offset - self._folded_offset) * alpha
+
+    def process_actions(self, actions: torch.Tensor):
+        self._sync_offset()
+        super().process_actions(actions)
+
+    def reset(self, env_ids: torch.Tensor | slice | None = None) -> None:
+        self._sync_offset()
+        super().reset(env_ids)
+
+
+@dataclass(kw_only=True)
 class JointVelocityDelayedLowPassActionCfg(JointVelocityLowPassActionCfg):
     """Joint velocity action with random delay and 1st-order low-pass filter."""
 
