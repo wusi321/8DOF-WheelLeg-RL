@@ -926,19 +926,37 @@ below the 0.06 m the swing shaper aims at: a token lift earns nothing.
 """
 
 
-def blocked_gate(env, command_name="twist", blocked_speed=RELIEF_BLOCKED_SPEED):
-    """1 where the robot is asked to travel and is not achieving it.
+STALL_SPEED = 0.05
+"""Speed below which a commanded robot counts as pressed against something.
 
-    The same shortfall ``leg_motion_scale`` relaxes on. Defined separately rather
-    than shared, because that function is on the converged baseline and is not worth
-    editing for tidiness.
+The shortfall alone is not a deadlock. On a 7 cm step field this robot tracks about
+half its command all the time, so gating on the shortfall alone paid the step bonus
+during ordinary travel and bought wheel lifts that cost more speed than they were
+worth: that run lost a third of its locomotion income and its mean reward fell from
++42 to +2. Nearly stationary while being asked to move is the state a force sensor
+would show.
+"""
+
+
+def blocked_gate(
+    env,
+    command_name="twist",
+    blocked_speed=RELIEF_BLOCKED_SPEED,
+    stalled_speed=STALL_SPEED,
+):
+    """1 where the robot is asked to travel and is going nowhere.
+
+    Nearly stationary *and* asked to move. Force produces acceleration produces
+    velocity, and the last step is the one the servo is fighting, so this is the
+    state an opposing force would show without needing a force sensor.
     """
     asset = env.scene["wheelleg"]
     command = env.command_manager.get_command(command_name)
     speed = torch.norm(asset.data.root_link_lin_vel_b[:, :2], dim=1)
     asked = torch.norm(command[:, :2], dim=1) + torch.abs(command[:, 2])
     shortfall = torch.clamp((asked - speed) / torch.clamp(asked, min=1e-6), 0.0, 1.0)
-    return (asked > blocked_speed).float() * shortfall
+    stalled = (speed < stalled_speed).float()
+    return (asked > blocked_speed).float() * stalled * shortfall
 
 
 def wheel_ground_clearance(env, sensor_name="height_scanner", asset_cfg=None):

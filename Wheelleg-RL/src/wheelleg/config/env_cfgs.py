@@ -362,7 +362,7 @@ def _posture_contract(cfg, enforce_standing=True):
     cfg.rewards["wheel_step_bonus"] = RewardTermCfg(
         func=standing.wheel_step_bonus, weight=3.0, params={"asset_cfg": wheel_cfg})
     cfg.rewards["blocked_stall_cost"] = RewardTermCfg(
-        func=standing.blocked_stall_cost, weight=-1.5)
+        func=standing.blocked_stall_cost, weight=-0.8, params={"cap": 1.0})
 
     return cfg
 
