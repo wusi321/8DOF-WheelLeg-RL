@@ -4,6 +4,7 @@ from .base_env_cfg import flat_env_cfg as _base_flat_env_cfg, rough_env_cfg as _
 from ..robot_cfg import get_robot_cfg
 from ..stance import MIN_CLEARANCE, STANDING_CLEARANCE
 from ..mdp import standing
+from ..mdp.curriculums import PathLength
 
 
 def _posture_contract(cfg, enforce_standing=True):
@@ -25,10 +26,19 @@ def _posture_contract(cfg, enforce_standing=True):
             exclude_parent_body=True, include_geom_groups=(0,),
         ),
     )
-    # Posture and ground contact must not end the episode; a completed fall still
-    # does, through bad_orientation, and physics blow-ups through nan_detection.
+    # Posture and ground contact must not end the episode. A fall is ended by its
+    # own outcome instead: the body may lie there until it has failed to get up
+    # for a while, which is the only way standing back up can be learned.
     for name in ("low_base_height", "knee_ground_contact", "base_ground_contact"):
         cfg.terminations.pop(name, None)
+    cfg.terminations.pop("bad_orientation", None)
+    cfg.terminations["fallen_too_long"] = TerminationTermCfg(
+        func=standing.FallenTooLong,
+        params={
+            "max_down_time": standing.MAX_DOWN_TIME,
+            "tilt_limit": standing.DOWN_TILT_LIMIT,
+        },
+    )
 
     if enforce_standing:
         cfg.rewards["base_height_l2"] = RewardTermCfg(
@@ -82,11 +92,24 @@ def _posture_contract(cfg, enforce_standing=True):
                 "sensor_name": "feet_ground_contact",
             },
         )
-        # Keep the two legs posed alike; an asymmetric gait is not a wheeled gait.
+        # Keep the two legs posed alike. The weight is deliberately small: on a
+        # slope the two legs must differ in length for the body to stay level, so
+        # a strong symmetry term fights the very articulation the terrain needs.
         cfg.rewards["leg_symmetry"] = RewardTermCfg(
             func=standing.leg_symmetry_error,
-            weight=-10.0,
+            weight=-1.0,
             params={"command_name": "twist"},
+        )
+        # Keep the body's z axis vertical instead of letting it follow the slope.
+        # Ramped linearly in radians so it can actually pull back the steady tilt
+        # that rolling along a bank produces; a squared cost is flat near upright.
+        cfg.rewards["body_level"] = RewardTermCfg(
+            func=standing.body_level_error,
+            weight=-12.0,
+            params={
+                "forward_allowance": standing.FORWARD_LEAN_ALLOWANCE,
+                "backward_scale": standing.BACKWARD_LEAN_SCALE,
+            },
         )
         cfg.rewards["standing_pose"] = RewardTermCfg(
             func=standing.standing_pose_error, weight=-0.5)
@@ -107,6 +130,7 @@ def _posture_contract(cfg, enforce_standing=True):
     cfg.metrics["wheel_support_time_s"] = MetricsTermCfg(func=standing.wheel_support_time)
     cfg.metrics["wheel_contact_fraction"] = MetricsTermCfg(func=standing.wheel_contact_fraction)
     cfg.metrics["lateral_command"] = MetricsTermCfg(func=standing.lateral_command_demand)
+    cfg.metrics["body_level_error"] = MetricsTermCfg(func=standing.body_level_error)
     return cfg
 
 
@@ -137,6 +161,18 @@ def rough_env_cfg(play=False, enforce_standing=True):
         tg.sub_terrains["random_grid"].grid_height_range = (0.0, 0.12)
     if "rc_wall" in tg.sub_terrains:
         tg.sub_terrains["rc_wall"].wall_height_range = (0.04, 0.12)
+    # Obstacle height is interpolated by difficulty, and difficulty is
+    # level/(num_rows-1). With the default range (0.0, 1.0) the easiest level
+    # generates *zero-height* obstacles: a pyramid staircase with step_height 0
+    # is flat ground, and so is a random grid with grid_height 0. The measured
+    # terrain curriculum then averaged level 0.556, i.e. roughly 7 mm of
+    # obstacle, so the policy spent its whole run on effectively flat ground and
+    # never learned to lift a wheel over a step. Starting the range above zero
+    # guarantees a real obstacle at every level.
+    tg.difficulty_range = (0.3, 1.0)
+    # PathLength feeds the terrain curriculum, which only advances when the robot
+    # actually travels; see the note in terrain_levels_vel_strict.
+    cfg.metrics["path_length_m"] = MetricsTermCfg(func=PathLength)
     return _posture_contract(_adapt(cfg, play), enforce_standing)
 
 

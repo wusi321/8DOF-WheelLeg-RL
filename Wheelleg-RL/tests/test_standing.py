@@ -24,8 +24,11 @@ stance = _load("wheelleg_stance", "src/wheelleg/stance.py")
 
 
 def _env(clearances, speeds=None, yaws=None, base_contact=None, air=None,
-         wheel_contact=None, command=None):
-    """Fake env whose clearance ray hits `clearances` metres below base_link."""
+         wheel_contact=None, command=None, gravity=None, step_dt=0.02, lateral=None):
+    """Fake env whose clearance ray hits `clearances` metres below base_link.
+
+    ``speeds`` is the body-frame forward speed and ``lateral`` the sideways one.
+    """
     n = len(clearances)
     root_z = torch.tensor([[0.0, 0.0, float(c)] for c in clearances])
     hits = torch.zeros(n, 1, 1, 3)
@@ -36,15 +39,21 @@ def _env(clearances, speeds=None, yaws=None, base_contact=None, air=None,
     air = [0.0] * n if air is None else air
     wheel_contact = [[1, 1]] * n if wheel_contact is None else wheel_contact
     command = [[1.0, 0.0, 0.0]] * n if command is None else command
+    # Default to a perfectly upright body: projected gravity is (0, 0, -1).
+    gravity = [[0.0, 0.0, -1.0]] * n if gravity is None else gravity
+    lateral = [0.0] * n if lateral is None else lateral
     return SimpleNamespace(
         num_envs=n,
+        step_dt=step_dt,
         command_manager=SimpleNamespace(
             get_command=lambda name: torch.tensor([[float(v) for v in c] for c in command])),
         scene={
             "wheelleg": SimpleNamespace(data=SimpleNamespace(
                 root_link_pos_w=root_z,
-                root_link_lin_vel_b=torch.tensor([[float(s), 0.0, 0.0] for s in speeds]),
+                root_link_lin_vel_b=torch.tensor(
+                    [[float(s), float(y), 0.0] for s, y in zip(speeds, lateral)]),
                 root_link_ang_vel_b=torch.tensor([[0.0, 0.0, float(y)] for y in yaws]),
+                projected_gravity_b=torch.tensor([[float(v) for v in g] for g in gravity]),
             )),
             "base_clearance": SimpleNamespace(
                 data=SimpleNamespace(hit_pos_w=hits, distances=distances)),
@@ -247,7 +256,7 @@ class LateralStepTests(unittest.TestCase):
         self.assertEqual(standing.lateral_step_reward(env)[0].item(), 0.0)
 
     def test_step_reward_pays_for_a_sideways_step(self):
-        env = _env([0.14], wheel_contact=[[1, 0]],
+        env = _env([0.14], lateral=[standing.LATERAL_SPEED_MOVING], wheel_contact=[[1, 0]],
                    command=[[0.0, standing.LATERAL_COMMAND_REF, 0.0]])
         env.scene["feet_ground_contact"].data.current_air_time = torch.tensor([[0.3, 0.0]])
         self.assertEqual(standing.lateral_step_reward(env)[0].item(), 1.0)
@@ -257,6 +266,16 @@ class LateralStepTests(unittest.TestCase):
                    command=[[0.0, standing.LATERAL_COMMAND_REF, 0.0]])
         env.scene["feet_ground_contact"].data.current_air_time = torch.tensor([[0.3, 0.3]])
         self.assertEqual(standing.lateral_step_reward(env)[0].item(), 0.0)
+
+    def test_step_reward_needs_real_sideways_motion(self):
+        """Chattering a wheel up and down is not travelling sideways."""
+        env = _env([0.14], wheel_contact=[[1, 0]],
+                   command=[[0.0, standing.LATERAL_COMMAND_REF, 0.0]])
+        env.scene["feet_ground_contact"].data.current_air_time = torch.tensor([[0.3, 0.0]])
+        self.assertEqual(standing.lateral_step_reward(env)[0].item(), 0.0)
+        env.scene["wheelleg"].data.root_link_lin_vel_b = torch.tensor(
+            [[0.0, standing.LATERAL_SPEED_MOVING, 0.0]])
+        self.assertEqual(standing.lateral_step_reward(env)[0].item(), 1.0)
 
 
 class WheeledStanceLocomotionTests(unittest.TestCase):
@@ -284,6 +303,135 @@ class WheeledStanceLocomotionTests(unittest.TestCase):
         self.assertEqual(reward[0].item(), 0.0)
         self.assertAlmostEqual(reward[1].item(), 0.5, places=6)
         self.assertAlmostEqual(reward[2].item(), 1.0, places=6)
+
+
+class BodyLevelTests(unittest.TestCase):
+    """The body's z axis must stay vertical rather than following the slope."""
+
+    @staticmethod
+    def _gravity(pitch):
+        """Projected gravity for a body pitch, positive meaning leaning backwards.
+
+        ``body_tilt`` recovers the pitch as ``asin(g_x)``, so this is its inverse.
+        """
+        import math
+
+        return [(math.sin(pitch), 0.0, -math.cos(pitch))]
+
+    def test_upright_body_costs_nothing(self):
+        env = _env([0.145], gravity=self._gravity(0.0))
+        self.assertAlmostEqual(standing.body_level_error(env)[0].item(), 0.0, places=9)
+
+    def test_forward_lean_is_free_within_the_allowance(self):
+        env = _env([0.145], gravity=self._gravity(-0.9 * standing.FORWARD_LEAN_ALLOWANCE))
+        self.assertAlmostEqual(standing.body_level_error(env)[0].item(), 0.0, places=9)
+
+    def test_excessive_forward_lean_is_charged(self):
+        env = _env([0.145], gravity=self._gravity(-2 * standing.FORWARD_LEAN_ALLOWANCE))
+        self.assertGreater(standing.body_level_error(env)[0].item(), 0.0)
+
+    def test_backward_lean_costs_more_than_the_same_forward_lean(self):
+        angle = standing.FORWARD_LEAN_ALLOWANCE  # at the edge of the free band
+        back = _env([0.145], gravity=self._gravity(angle))
+        forward = _env([0.145], gravity=self._gravity(-angle))
+        self.assertGreater(standing.body_level_error(back)[0].item(),
+                           standing.body_level_error(forward)[0].item())
+
+    def test_roll_on_a_bank_is_charged(self):
+        """Lying along a lateral slope must not be free."""
+        import math
+
+        roll = 0.2
+        env = _env([0.145], gravity=[(0.0, math.sin(roll), -math.cos(roll))])
+        self.assertAlmostEqual(standing.body_level_error(env)[0].item(), roll, places=6)
+
+    def test_tilt_cost_is_linear_not_squared(self):
+        """A squared cost is flat near upright and cannot pull back a steady bias."""
+        small = standing.body_level_error(_env([0.145], gravity=self._gravity(0.1)))[0].item()
+        large = standing.body_level_error(_env([0.145], gravity=self._gravity(0.2)))[0].item()
+        self.assertAlmostEqual(large / small, 2.0, places=5)
+
+
+class CrouchAtSpeedTests(unittest.TestCase):
+    def test_parked_robot_keeps_the_full_requirement(self):
+        env = _env([0.13], speeds=[0.0])
+        self.assertAlmostEqual(standing.effective_min_clearance(env)[0].item(),
+                               stance.MIN_CLEARANCE, places=9)
+
+    def test_high_speed_relaxes_both_thresholds_by_the_same_drop(self):
+        env = _env([0.145], speeds=[standing.CROUCH_SPEED_REFERENCE * 2])
+        self.assertAlmostEqual(standing.effective_min_clearance(env)[0].item(),
+                               stance.MIN_CLEARANCE - standing.CROUCH_CLEARANCE_DROP, places=9)
+        self.assertAlmostEqual(standing.effective_target_height(env)[0].item(),
+                               stance.STANDING_CLEARANCE - standing.CROUCH_CLEARANCE_DROP,
+                               places=9)
+
+    def test_reversing_gets_the_same_allowance(self):
+        forward = _env([0.145], speeds=[standing.CROUCH_SPEED_REFERENCE])
+        reverse = _env([0.145], speeds=[-standing.CROUCH_SPEED_REFERENCE])
+        self.assertAlmostEqual(standing.crouch_gate(forward)[0].item(),
+                               standing.crouch_gate(reverse)[0].item(), places=9)
+
+    def test_a_fast_crouch_is_not_charged_as_a_crawl(self):
+        height = stance.MIN_CLEARANCE - standing.CROUCH_CLEARANCE_DROP
+        env = _env([height], speeds=[standing.CROUCH_SPEED_REFERENCE * 2])
+        self.assertEqual(standing.low_posture_locomotion(env)[0].item(), 0.0)
+
+    def test_the_same_crouch_is_a_crawl_when_parked_and_moving_slowly(self):
+        height = stance.MIN_CLEARANCE - standing.CROUCH_CLEARANCE_DROP
+        env = _env([height], speeds=[standing.LINEAR_SPEED_MOVING])
+        self.assertGreater(standing.low_posture_locomotion(env)[0].item(), 0.0)
+
+    def test_the_requirement_never_falls_below_the_documented_floor(self):
+        env = _env([0.145], speeds=[10.0])
+        floor = stance.MIN_CLEARANCE - standing.CROUCH_CLEARANCE_DROP
+        self.assertAlmostEqual(standing.effective_min_clearance(env)[0].item(), floor, places=9)
+        self.assertGreater(floor, 0.11)
+
+
+class FallenTooLongTests(unittest.TestCase):
+    def _term(self, max_down_time=1.0, tilt_limit=0.9):
+        cfg = SimpleNamespace(params={"max_down_time": max_down_time, "tilt_limit": tilt_limit})
+        return cfg
+
+    def test_an_upright_robot_never_terminates(self):
+        env = _env([0.145])
+        term = standing.FallenTooLong(self._term(0.1), env)
+        for _ in range(20):
+            self.assertFalse(term(env, 0.1, 0.9).any().item())
+
+    def test_a_fall_is_tolerated_for_a_while_then_ends_the_episode(self):
+        """The delay is what gives the policy time to practise standing up."""
+        import math
+
+        env = _env([0.02], base_contact=[1],
+                   gravity=[(math.sin(1.4), 0.0, -math.cos(1.4))])
+        term = standing.FallenTooLong(self._term(max_down_time=0.5), env)
+        seen = [term(env, 0.5, 0.9).item() for _ in range(40)]
+        self.assertFalse(any(seen[:20]))  # 0.4 s down: still allowed
+        self.assertTrue(seen[-1])         # 0.8 s down: give up
+
+    def test_recovering_resets_the_timer(self):
+        import math
+
+        down = _env([0.02], gravity=[(math.sin(1.4), 0.0, -math.cos(1.4))])
+        up = _env([0.145])
+        term = standing.FallenTooLong(self._term(max_down_time=0.5), down)
+        for _ in range(20):
+            term(down, 0.5, 0.9)
+        self.assertFalse(term(up, 0.5, 0.9).item())
+        for _ in range(20):
+            self.assertFalse(term(up, 0.5, 0.9).any().item())
+
+    def test_reset_clears_the_accumulated_time(self):
+        import math
+
+        env = _env([0.02], gravity=[(math.sin(1.4), 0.0, -math.cos(1.4))])
+        term = standing.FallenTooLong(self._term(max_down_time=0.5), env)
+        for _ in range(40):
+            term(env, 0.5, 0.9)
+        term.reset()
+        self.assertFalse(term(env, 0.5, 0.9).item())
 
 
 if __name__ == "__main__":

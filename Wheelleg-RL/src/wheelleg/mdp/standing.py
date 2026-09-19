@@ -50,6 +50,26 @@ WHEEL_AIR_HORIZON = 0.75  # s
 # that lateral balance and turning can still use abduction.
 _SYMMETRY_WEIGHTS = (0.5, 1.0, 1.0)  # hip, thigh, knee
 
+# At speed the body is allowed to drop a little to resist pitching over
+# backwards, and to lean forward rather than being held bolt upright. The drop is
+# capped so the clearance requirement never falls below MIN_CLEARANCE - drop.
+CROUCH_SPEED_REFERENCE = 0.6  # m/s of forward speed for the full allowance
+CROUCH_CLEARANCE_DROP = 0.015  # m allowed off both height thresholds
+
+# Body attitude: roll is always costly, a forward lean is free up to the
+# allowance, and leaning backwards costs extra because it is how the robot
+# wheelies over under a large forward command.
+FORWARD_LEAN_ALLOWANCE = 0.30  # rad, about 17 degrees
+BACKWARD_LEAN_SCALE = 1.5
+
+# How far the body may tip, and for how long, before the episode is ended.
+DOWN_TILT_LIMIT = 0.9  # rad, about 52 degrees
+MAX_DOWN_TIME = 5.0  # s
+
+# Sideways speed that counts as genuinely translating sideways rather than
+# merely rotating, used by the lateral step reward.
+LATERAL_SPEED_MOVING = 0.10  # m/s
+
 _LEG_JOINTS = (
     "left_hip_joint", "left_thigh_joint", "left_knee_joint",
     "right_hip_joint", "right_thigh_joint", "right_knee_joint",
@@ -80,6 +100,31 @@ def moving_gate(env, linear_speed=LINEAR_SPEED_MOVING, yaw_rate=YAW_RATE_MOVING)
     return torch.clamp(gate, 0.0, 1.0)
 
 
+def forward_speed(env):
+    """Body-frame forward speed, m/s. Negative means reversing."""
+    return torch.nan_to_num(env.scene["wheelleg"].data.root_link_lin_vel_b[:, 0])
+
+
+def crouch_gate(env, reference=CROUCH_SPEED_REFERENCE):
+    """How much of the high-speed crouch allowance is available, 0 to 1.
+
+    A robot driving fast must resist pitching over backwards, and dropping the
+    body is the cheap way to do it, so both height thresholds relax with forward
+    speed. Reversing gets the same allowance because it tips the other way.
+    """
+    return torch.clamp(torch.abs(forward_speed(env)) / reference, 0.0, 1.0)
+
+
+def effective_min_clearance(env, min_clearance=MIN_CLEARANCE):
+    """Clearance required while moving, relaxed at speed by the crouch allowance."""
+    return min_clearance - CROUCH_CLEARANCE_DROP * crouch_gate(env)
+
+
+def effective_target_height(env, target_height=STANDING_CLEARANCE):
+    """Stance height to track, relaxed at speed by the crouch allowance."""
+    return target_height - CROUCH_CLEARANCE_DROP * crouch_gate(env)
+
+
 def low_posture_locomotion(
     env,
     min_clearance=MIN_CLEARANCE,
@@ -89,10 +134,12 @@ def low_posture_locomotion(
     """Height deficit while travelling: the crawl penalty.
 
     Zero for a parked robot at any height, so low posture and lying on the ground
-    are legal; it rises linearly as a *moving* robot sinks below the requirement.
+    are legal; it rises linearly as a *moving* robot sinks below the requirement,
+    which itself drops a little at speed to allow a forward-leaning crouch.
     """
+    floor = effective_min_clearance(env, min_clearance)
     clearance = base_clearance(env)
-    deficit = torch.clamp((min_clearance - clearance) / min_clearance, 0.0, 1.0)
+    deficit = torch.clamp((floor - clearance) / floor, 0.0, 1.0)
     deficit = torch.where(_measurable(clearance), deficit, torch.zeros_like(deficit))
     return deficit * moving_gate(env, linear_speed, yaw_rate)
 
@@ -101,10 +148,45 @@ def standing_height_error(env, target_height=STANDING_CLEARANCE):
     """Normalised squared deviation from the working stance height.
 
     Always active, so a low posture is mildly discouraged and lying on the ground
-    is expensive, without ever ending the episode.
+    is expensive, without ever ending the episode. The target drops at speed so a
+    high-speed crouch is not charged as a posture error.
     """
+    target = effective_target_height(env, target_height)
     clearance = torch.clamp(base_clearance(env), min=0.0)
-    return torch.square((clearance - target_height) / target_height)
+    return torch.square((clearance - target) / target)
+
+
+def body_tilt(env):
+    """Body roll and pitch in radians.
+
+    ``pitch`` is positive when the body leans *backwards* and negative when it
+    leans forwards, because the projected gravity x component is ``-sin(pitch)``.
+    """
+    gravity = torch.nan_to_num(env.scene["wheelleg"].data.projected_gravity_b)
+    pitch = torch.asin(torch.clamp(gravity[:, 0], -1.0, 1.0))
+    roll = torch.asin(torch.clamp(gravity[:, 1], -1.0, 1.0))
+    return roll, pitch
+
+
+def body_level_error(
+    env,
+    forward_allowance=FORWARD_LEAN_ALLOWANCE,
+    backward_scale=BACKWARD_LEAN_SCALE,
+):
+    """Cost of tilting the body away from world vertical, in radians.
+
+    The body's z axis must stay upright rather than following the slope: tilt in
+    roll is always charged, so the machine cannot simply lie along a bank, while
+    a forward lean is free up to ``forward_allowance`` because that is what a
+    wheeled robot does under acceleration. Leaning *backwards* costs extra, since
+    that is the wheelie that ends an episode under a large forward command.
+
+    Ramped linearly rather than squared: a squared tilt cost is flat near upright
+    and cannot pull back the steady bias that rolling on a slope produces.
+    """
+    roll, pitch = body_tilt(env)
+    forward_excess = torch.clamp(-pitch - forward_allowance, min=0.0)
+    return torch.abs(roll) + backward_scale * torch.clamp(pitch, min=0.0) + forward_excess
 
 
 def standing_pose_error(env):
@@ -201,18 +283,59 @@ def lateral_step_reward(
     env,
     command_name="twist",
     reference=LATERAL_COMMAND_REF,
+    motion_reference=LATERAL_SPEED_MOVING,
     sensor_name="feet_ground_contact",
 ):
-    """Pay for stepping a leg while a sideways command is active.
+    """Pay for stepping a leg while actually travelling sideways.
 
     Wheels cannot roll sideways, so a sideways command is only achievable by
     lifting a leg, translating it and planting it again. Velocity tracking alone
     cannot prefer that over simply slipping, so the step itself is rewarded. The
-    other wheel must still be carrying the robot, which rules out a fall.
+    other wheel must still be carrying the robot, and the body must genuinely be
+    moving sideways relative to its own heading -- otherwise a robot that merely
+    chatters its wheels up and down collects the reward for doing nothing.
     """
+    data = env.scene["wheelleg"].data
+    lateral_speed = torch.abs(torch.nan_to_num(data.root_link_lin_vel_b[:, 1]))
+    translating = torch.clamp(lateral_speed / motion_reference, 0.0, 1.0)
     lifting = (wheel_air_time(env, sensor_name) > 0.0).float()
     supporting = (wheel_support_time(env, sensor_name) <= 0.0).float()
-    return lateral_command_demand(env, command_name, reference) * lifting * supporting
+    return lateral_command_demand(env, command_name, reference) * translating * lifting * supporting
+
+
+class FallenTooLong:
+    """End an episode only once the robot has been down for a while.
+
+    Resetting the instant the body tips teaches the policy that falling is a way
+    to end the episode, and never gives it the seconds it needs to practise
+    standing back up. Here the episode continues while the robot is down and ends
+    only after ``max_down_time`` seconds without recovering, so getting up is
+    worth learning.
+    """
+
+    def __init__(self, cfg, env):
+        self.max_down_time = float(cfg.params["max_down_time"])
+        self.tilt_limit = float(cfg.params["tilt_limit"])
+        self._down_time = torch.zeros(env.num_envs, device=env.device)
+        self._dt = env.step_dt
+
+    def _is_down(self, env):
+        gravity_z = torch.nan_to_num(env.scene["wheelleg"].data.projected_gravity_b[:, 2])
+        tilted = torch.acos(torch.clamp(-gravity_z, -1.0, 1.0)) > self.tilt_limit
+        return tilted | base_ground_contact(env)
+
+    def __call__(self, env, max_down_time, tilt_limit):
+        del max_down_time, tilt_limit  # Read once in __init__.
+        down = self._is_down(env)
+        self._down_time = torch.where(
+            down, self._down_time + self._dt, torch.zeros_like(self._down_time)
+        )
+        return self._down_time > self.max_down_time
+
+    def reset(self, env_ids=None):
+        if env_ids is None:
+            env_ids = slice(None)
+        self._down_time[env_ids] = 0.0
 
 
 def wheeled_stance_locomotion(

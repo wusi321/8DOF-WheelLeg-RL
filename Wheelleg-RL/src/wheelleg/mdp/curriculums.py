@@ -283,11 +283,27 @@ def terrain_levels_vel_strict(
     command = env.command_manager.get_command(command_name)
     assert command is not None
 
-    # Horizontal displacement from episode start
-    distance = torch.norm(
-        asset.data.root_link_pos_w[env_ids, :2] - env.scene.env_origins[env_ids, :2],
-        dim=1,
-    )
+    # Distance used for promotion and demotion.
+    #
+    # The textbook measure is the net horizontal displacement from the spawn
+    # point, and that is what this used to use. It collapses the difficulty to
+    # the easiest tier on this robot: the command mix is 100% heading-controlled,
+    # so the robot circles. A robot travelling at 0.25 m/s while yawing at
+    # 0.3 rad/s covers about 4.8 m of arc in a 19 s episode but only about 1.6 m
+    # of net displacement, which is below the demotion threshold, so it is
+    # demoted every episode however well it walks.
+    #
+    # PathLength publishes how far each robot has actually travelled, which is
+    # the measure that matches "did it get anywhere". Fall back to net
+    # displacement when that term is not configured.
+    travelled = getattr(terrain, "_path_travelled", None)
+    if travelled is None:
+        distance = torch.norm(
+            asset.data.root_link_pos_w[env_ids, :2] - env.scene.env_origins[env_ids, :2],
+            dim=1,
+        )
+    else:
+        distance = travelled[env_ids]
 
     cmd_speed = torch.norm(command[env_ids, :2], dim=1)
 
@@ -540,3 +556,44 @@ def terrain_levels_obstacle_release(
     for name in ("pyramid_stairs", "pyramid_stairs_inv", "random_grid", "rc_wall"):
         result[f"{name}_released"] = torch.tensor(float(name in allowed_names), device=env.device)
     return result
+
+
+class PathLength:
+    """Episode path length per robot, and the terrain curriculum's progress input.
+
+    Configured as a metric because metrics run every control step while the
+    terrain curriculum only runs once, at reset. The accumulator is published on
+    the terrain object so ``terrain_levels_vel_strict`` can read the episode
+    total before the metrics manager clears it.
+    """
+
+    # Anything above this in one 20 ms step would be a teleport, not travel: it
+    # corresponds to 5 m/s, well above anything this robot can drive.
+    _MAX_STEP = 0.1  # m
+
+    def __init__(self, cfg, env):
+        del cfg  # No parameters.
+        self._env = env
+        self._path = torch.zeros(env.num_envs, device=env.device)
+        self._last_xy = self._current_xy().clone()
+        terrain = env.scene.terrain
+        if terrain is not None:
+            terrain._path_travelled = self._path
+
+    def _current_xy(self):
+        return self._env.scene["wheelleg"].data.root_link_pos_w[:, :2]
+
+    def __call__(self, env):
+        del env  # The env reference is held from construction.
+        xy = self._current_xy()
+        step = torch.linalg.norm(xy - self._last_xy, dim=1)
+        # A reset moves the robot across the grid; that is not travel.
+        self._path += torch.where(step > self._MAX_STEP, torch.zeros_like(step), step)
+        self._last_xy = xy.clone()
+        return self._path
+
+    def reset(self, env_ids=None):
+        if env_ids is None:
+            env_ids = slice(None)
+        self._path[env_ids] = 0.0
+        self._last_xy[env_ids] = self._current_xy()[env_ids]

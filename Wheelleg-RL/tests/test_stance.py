@@ -124,10 +124,31 @@ class EnvironmentConfigTests(unittest.TestCase):
         """The whole point: posture is a reward signal, never a reset."""
         source = (root / "src/wheelleg/config/env_cfgs.py").read_text(encoding="utf-8")
         self.assertIn("cfg.terminations.pop", source)
-        for name in ("low_base_height", "knee_ground_contact", "base_ground_contact"):
+        for name in ("low_base_height", "knee_ground_contact", "base_ground_contact",
+                     "bad_orientation"):
             self.assertIn(f'"{name}"', source)
-        # No posture term may reappear in the terminations table.
-        self.assertNotIn("cfg.terminations[", source)
+        # No posture term may reappear as a termination key. The only term added
+        # here is the fall-recovery timeout.
+        assigned = set(re.findall(r'cfg\.terminations\["([^"]+)"\]\s*=', source))
+        self.assertEqual(assigned, {"fallen_too_long"})
+
+    def test_falling_is_allowed_until_the_robot_cannot_get_up(self):
+        """A fall must not reset instantly, or getting up can never be learned."""
+        source = (root / "src/wheelleg/mdp/standing.py").read_text(encoding="utf-8")
+        self.assertIn("class FallenTooLong", source)
+        self.assertIn("self._down_time > self.max_down_time", source)
+        self.assertIn("def reset(self, env_ids=None)", source)
+
+    def test_terrain_difficulty_never_starts_at_zero(self):
+        """Difficulty 0 makes obstacle terrains literally flat."""
+        source = (root / "src/wheelleg/config/env_cfgs.py").read_text(encoding="utf-8")
+        self.assertIn("tg.difficulty_range = (0.3, 1.0)", source)
+
+    def test_terrain_curriculum_uses_path_length_not_net_displacement(self):
+        """Circling under heading commands demotes a walking robot every episode."""
+        source = (root / "src/wheelleg/mdp/curriculums.py").read_text(encoding="utf-8")
+        self.assertIn("_path_travelled", source)
+        self.assertIn("class PathLength", source)
 
     def test_recovery_does_not_terminate_on_low_height(self):
         """A recovery task must be allowed to start from the ground."""
