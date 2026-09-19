@@ -316,6 +316,42 @@ def _posture_contract(cfg, enforce_standing=True):
         func=standing.wheel_height_difference,
         params={"asset_cfg": SceneEntityCfg("wheelleg", body_names=standing._WHEEL_BODIES)},
     )
+
+    # ---------------------------------------------------------------------
+    # Loosen the fixed-pose terms. They all measure the same thing -- how far the
+    # machine is from the nominal stance -- and between them they made every other
+    # pose expensive. That is fine on flat ground and fatal for an obstacle:
+    # getting over one needs the body to duck, the wheels to leave the ground and
+    # the two legs to differ, and every one of those was charged, so the cheapest
+    # policy was to stay exactly in the stance and never try.
+    #
+    # There is no mechanical obstacle to remove. Measured against its own forward
+    # kinematics the axle can be tucked from -0.153 to +0.065 in the base frame,
+    # which puts an 18 cm step within reach from the nominal body height, while the
+    # robot stopped at 4.5 cm, one and a half wheel radii. What stopped it was the
+    # reward.
+    #
+    # Reduced, not removed. Standing tall and level is still what the machine is
+    # for and these terms still say so; they no longer forbid the manoeuvre.
+    # ---------------------------------------------------------------------
+    relaxed = {
+        "base_height_l2": -1.5,          # was -4.0, target 0.145 m
+        "posture_pose": -0.5,            # was -2.0, pulls the legs to the stance
+        "standing_pose": -0.2,           # was -0.5, same, weaker
+        "leg_symmetry": -0.4,            # was -1.0, and a slope needs asymmetry
+        "joint_pos_penalty_ab": -0.5,    # was -1.0
+        "joint_pos_penalty_sagittal": -0.15,  # was -0.3
+        # The crawl wall. At -100 with the legal band only 0.145 +- 0.015 m wide,
+        # any duck below 0.13 m while moving was catastrophic -- up to -100 per
+        # second, against a standing budget of about +31. A climb has to pass
+        # through that band. Kept substantial, because crawling was explicitly not
+        # wanted; this is the knob to restore if the gait degenerates into one.
+        "low_posture_locomotion": -30.0,  # was -100.0
+    }
+    for name, weight in relaxed.items():
+        if name in cfg.rewards:
+            cfg.rewards[name].weight = weight
+
     return cfg
 
 
