@@ -73,6 +73,15 @@ class PostureCommand(CommandTerm):
     """[B, 1] commanded posture, 0 folded to 1 standing."""
     return self.alpha.unsqueeze(-1)
 
+  def _update_metrics(self) -> None:
+    """Publish the commanded posture for logging.
+
+    ``CommandTerm.reset`` takes the mean over environments of each metric and
+    then zeroes it, so overwriting here reports the mean commanded posture across
+    environments at the end of the logging window, which is what is worth seeing.
+    """
+    self.metrics["posture_alpha"] = self.alpha
+
   def _resample_command(self, env_ids: torch.Tensor) -> None:
     count = len(env_ids)
     draw = torch.rand(count, device=self.device)
