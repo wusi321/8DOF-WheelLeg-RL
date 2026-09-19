@@ -130,12 +130,14 @@ uv run wandb login
 export WANDB_API_KEY="你的_W&B_API_KEY"
 ```
 
-非交互服务器建议使用环境变量：
+非交互服务器建议使用环境变量（下面的值就是当前实际在用的）：
 
 ```bash
-export WANDB_PROJECT=wheelleg-rl
-export WANDB_ENTITY=你的账号或团队名
+export WANDB_PROJECT=mjlab
+export WANDB_ENTITY=liucunfu2005-          # 注意结尾的连字符
 ```
+
+`play` 的 `--wandb-run-path` 要用 `<entity>/<project>/<run_id>`，即 `liucunfu2005-/mjlab/<run_id>`。
 
 如果暂时不需要上传：
 
@@ -147,59 +149,70 @@ export WANDB_MODE=disabled
 
 ## 6. Play 回放
 
-当前支持 MJLab 的本地 checkpoint 和 W&B checkpoint 回放。先列出训练产物：
+先列出训练产物（**不要凭记忆猜文件名**）：
 
 ```bash
 find logs/rsl_rl -name 'model_*.pt' -type f | sort
 ```
 
+**checkpoint 命名规则**：训练在**第 0 轮、每 `save_interval`（=100）轮、以及最后一轮**各存一次。迭代循环是 `0 .. max_iterations-1`，所以 **`ITERS=1000` 的最终 checkpoint 是 `model_999.pt`，不是 `model_1000.pt`**。
+
+| `ITERS` | 实际文件名 |
+|---|---|
+| 1000 | `model_0.pt`、`model_100.pt` … `model_900.pt`、**`model_999.pt`** |
+| 500 | `model_0.pt` … `model_400.pt`、**`model_499.pt`** |
+| 6000 | `model_0.pt` … `model_5900.pt`、**`model_5999.pt`** |
+
 加载本地 checkpoint：
 
 ```bash
 uv run play Wheelleg-Flat-v0 \
-  --checkpoint-file logs/rsl_rl/wheelleg_flat/<run_name>/model_5000.pt
+  --checkpoint-file logs/rsl_rl/wheelleg_flat/<run_name>/model_5999.pt \
+  --num-envs 4 --viewer viser
 ```
 
 粗糙地形和恢复任务：
 
 ```bash
 uv run play Wheelleg-Rough-v0 \
-  --checkpoint-file logs/rsl_rl/wheelleg_rough/<run_name>/model_5000.pt
-
-uv run play Wheelleg-Recovery-v0 \
-  --checkpoint-file logs/rsl_rl/wheelleg_recovery/<run_name>/model_5000.pt
+  --checkpoint-file logs/rsl_rl/wheelleg_rough/<run_name>/model_999.pt \
+  --num-envs 4 --viewer viser
 ```
 
-从 W&B 加载最新 checkpoint：
-
-```bash
-uv run play Wheelleg-Flat-v0 \
-  --wandb-run-path <entity>/wheelleg-rl/<run_id>
-```
-
-从 W&B 加载指定 checkpoint：
+从 W&B 加载（**推荐不指定文件名，会自动取迭代数最高的那个**，因此不会因为命名猜错而失败）：
 
 ```bash
 uv run play Wheelleg-Rough-v0 \
-  --wandb-run-path <entity>/wheelleg-rl/<run_id> \
-  --wandb-checkpoint-name model_5000.pt
+  --wandb-run-path liucunfu2005-/mjlab/<run_id> \
+  --num-envs 4 --viewer viser
 ```
 
-W&B 回放前必须先登录，并保证 run path、项目名和实体名正确。`--checkpoint-file` 与 `--wandb-run-path` 二选一；如果两个都不给，训练策略回放会报错。
+指定 W&B 里的某个 checkpoint（名字必须真实存在，否则会报错并列出可用文件）：
+
+```bash
+uv run play Wheelleg-Rough-v0 \
+  --wandb-run-path liucunfu2005-/mjlab/<run_id> \
+  --wandb-checkpoint-name model_999.pt \
+  --num-envs 4 --viewer viser
+```
+
+实体名 `liucunfu2005-`（**结尾带连字符**）和项目名 `mjlab` 是当前实际使用的；早期文档里的 `wheelleg-rl` 是错的。启动日志会打印 `Loading checkpoint: <文件名> (run: <run_id>, ...)`，**以此确认拉到的 run 是否正确**。
+
+W&B 回放前必须先登录。`--checkpoint-file` 与 `--wandb-run-path` 二选一；如果两个都不给，训练策略回放会报错。下载缓存位于 `logs/rsl_rl/wandb_checkpoints/<run_id>/`。
 
 降低回放显存：
 
 ```bash
 uv run play Wheelleg-Rough-v0 \
-  --checkpoint-file logs/rsl_rl/wheelleg_rough/<run_name>/model_5000.pt \
-  --num-envs 1
+  --checkpoint-file logs/rsl_rl/wheelleg_rough/<run_name>/model_999.pt \
+  --num-envs 1 --viewer viser
 ```
 
 录制视频：
 
 ```bash
 uv run play Wheelleg-Flat-v0 \
-  --checkpoint-file logs/rsl_rl/wheelleg_flat/<run_name>/model_5000.pt \
+  --checkpoint-file logs/rsl_rl/wheelleg_flat/<run_name>/model_5999.pt \
   --num-envs 1 --video --video-length 500
 ```
 
