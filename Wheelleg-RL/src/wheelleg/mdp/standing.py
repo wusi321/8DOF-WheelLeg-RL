@@ -573,8 +573,8 @@ def fallen_tax(
 
 def recovery_success(
     env,
-    fallen_tilt=FALLEN_TILT,
     min_fallen_s=0.5,
+    fallen_tilt=FALLEN_TILT,
     up_tilt=RECOVERED_TILT,
     up_clearance=RECOVERED_CLEARANCE,
 ):
@@ -583,8 +583,15 @@ def recovery_success(
     Fires on the frame an environment that has been fallen for at least
     ``min_fallen_s`` becomes upright and high enough again. Re-arming requires
     being fallen again, so oscillating around the gate pays nothing.
+
+    "Fallen" here is the module's single definition -- tilt *or* clearance -- and
+    not tilt alone. A robot lying folded with the body flat on the ground is
+    level, so a tilt-only test never armed the bounty for exactly the posture a
+    recovery starts from, while ``fallen_tax`` charged it every step of the way:
+    the robot was taxed for being down and could not be paid for getting up. That
+    is the one arrangement the whole recovery economy exists to avoid.
     """
-    fallen = total_tilt(env) > fallen_tilt
+    fallen = fallen_mask(env, tilt_gate=fallen_tilt).bool()
     up = recovered_mask(env, up_tilt, up_clearance).bool()
     seconds = getattr(env, "_recovery_fallen_s", None)
     if seconds is None:

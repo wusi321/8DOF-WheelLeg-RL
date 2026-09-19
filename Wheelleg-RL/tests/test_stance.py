@@ -341,6 +341,38 @@ class EnvironmentConfigTests(unittest.TestCase):
         # And the tilt-inclusive gate must not be what pays the tracking reward.
         self.assertNotIn("env, std, command_name) * gait_gate(env)", source)
 
+    def test_solve_stance_refuses_a_target_it_cannot_reach(self):
+        """It used to return the bracket bound: 0.02 and 0.12 gave the same pose.
+
+        The thigh bracket tops out at REFERENCE_STANCE[1], so below about 0.128 m
+        there is no solution at all. That floor is also the reason a prone get-up
+        is a dynamic manoeuvre rather than a pose change: no stance puts the axle
+        under the base origin that low, so the first ten centimetres of the lift
+        are necessarily taken with the contact ahead of the centre of mass.
+        """
+        hip, thigh, knee = stance.solve_stance(stance.STANDING_CLEARANCE, 0.0)
+        self.assertAlmostEqual(
+            stance.leg_pose(thigh, knee, hip).base_clearance,
+            stance.STANDING_CLEARANCE,
+            places=4,
+        )
+        # And the stance the policy is initialised to must stay exactly what it was.
+        self.assertAlmostEqual(knee, stance.NOMINAL_STANCE[2], places=9)
+        for target in (0.02, 0.09, 0.12):
+            with self.assertRaises(ValueError):
+                stance.solve_stance(target, 0.0)
+
+    def test_the_recovery_bounty_uses_the_shared_fallen_definition(self):
+        """A folded robot is level, so a tilt-only test never armed the bounty.
+
+        It was taxed as fallen the whole time -- ``fallen_tax`` uses tilt *or*
+        clearance -- and could not be paid for getting up, which is the one
+        arrangement the recovery economy exists to avoid.
+        """
+        source = (root / "src/wheelleg/mdp/standing.py").read_text(encoding="utf-8")
+        self.assertIn("fallen = fallen_mask(env, tilt_gate=fallen_tilt).bool()", source)
+        self.assertNotIn("fallen = total_tilt(env) > fallen_tilt", source)
+
     def test_terrain_difficulty_never_starts_at_zero(self):
         """Difficulty 0 makes obstacle terrains literally flat."""
         source = (root / "src/wheelleg/config/env_cfgs.py").read_text(encoding="utf-8")

@@ -228,6 +228,19 @@ def solve_stance(target: float = STANDING_CLEARANCE, axle_x: float = 0.0):
         raise ValueError(f"solved thigh {thigh} outside joint limits")
     if not KNEE_LIMIT[0] < knee < KNEE_LIMIT[1]:
         raise ValueError(f"solved knee {knee} outside joint limits")
+    # The bracket for the thigh tops out at REFERENCE_STANCE[1], so a target below
+    # what that allows comes back as the bound rather than as a failure: asking for
+    # 0.02 m used to return the same pose as asking for 0.12 m, with an achieved
+    # clearance of 0.128 m, and no error. Check the answer instead of trusting the
+    # search. Below about 0.09 m there is no solution at all, which is the geometry
+    # that makes a prone get-up a dynamic manoeuvre rather than a pose change.
+    achieved = leg_pose(thigh, knee).base_clearance
+    if abs(achieved - target) > 1e-3:
+        raise ValueError(
+            f"no stance reaches {target} m clearance at axle_x={axle_x}; the thigh "
+            f"is bracketed at {REFERENCE_STANCE[1]} rad and the closest it gets is "
+            f"{achieved:.4f} m"
+        )
     return (REFERENCE_STANCE[0], thigh, knee)
 
 
