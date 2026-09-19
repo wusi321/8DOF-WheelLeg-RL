@@ -503,8 +503,12 @@ class EnvironmentConfigTests(unittest.TestCase):
         an 18 cm step.
         """
         source = (root / "src/wheelleg/mdp/curriculums.py").read_text(encoding="utf-8")
-        self.assertIn("move_up = distance > 1.0", source)
-        self.assertIn("move_down = (distance < 0.1) & ~move_up", source)
+        self.assertIn("move_up = ended_up & (distance > 1.0)", source)
+        self.assertIn("move_down = ended_up & (distance < 0.1) & ~move_up", source)
+        # Partial episodes -- the randomized lengths at the start of a run -- must
+        # not be judged, and a robot that fell on a row must not promote off it.
+        self.assertIn("judged = episode_steps >= 0.5 * env.max_episode_length", source)
+        self.assertIn("ended_up = judged & (fallen_mask(env) < 0.5)", source)
         self.assertNotIn("terrain_generator.size[0] / 2", source)
         self.assertNotIn("max_episode_length_s * 0.33", source)
         # Reverse-curriculum episodes travel nothing by design and must be excluded

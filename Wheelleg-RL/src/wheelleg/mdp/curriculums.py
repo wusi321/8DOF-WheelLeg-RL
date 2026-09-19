@@ -264,14 +264,16 @@ def terrain_levels_vel_strict(
     command_name: str,
     asset_cfg: SceneEntityCfg = SceneEntityCfg("wheelleg"),
 ) -> dict[str, torch.Tensor]:
-    """Velocity-based terrain curriculum aligned with standard legged_gym logic.
+    """Terrain curriculum on distance travelled, judged only on complete episodes.
 
-    Upgrade:   wheelleg travels beyond half the terrain tile width (> 4m).
-    Downgrade: actual distance < 50% of commanded target distance.
+    Promotion: the episode ran at least half its nominal length, ended with the
+    robot still upright, and travelled more than 1.0 m.
+    Demotion: the same, but almost no travel at all.
 
-    This matches DreamWaQ / HIMLoco / LocoLeggedWheel curriculum behaviour:
-    - Promotion is easy (any traversal past 4m qualifies).
-    - Demotion requires consistently failing to cover half the expected distance.
+    Episodes that began on the ground for the reverse curriculum are excluded
+    outright. They are a third of the run and travel nothing by design, so judging
+    them against a distance bar is what collapsed the ladder to row 0 and left the
+    machine on terrain where no slope was steep enough to bend a leg.
     """
     asset: Entity = env.scene[asset_cfg.name]
 
@@ -313,7 +315,29 @@ def terrain_levels_vel_strict(
     # where no slope was steep enough to bend a leg and no step tall enough to need
     # one, even though the legs can reach an 18 cm step. Nothing downstream of that
     # can teach climbing, which makes these two numbers the first thing to fix.
-    move_up = distance > 1.0
+    # Only episodes that ran long enough and ended with the robot still up are
+    # judged. The first resets of a run carry randomized episode lengths, and reading
+    # those as total failures demoted every environment within the first two
+    # iterations and left the whole grid on row 0 -- the same collapse by a different
+    # route. Ending upright is also what keeps the ladder from running away from the
+    # policy: a robot that falls on a row does not promote off it, so difficulty
+    # stops where ability does instead of escalating on travel alone.
+    #
+    # The curriculum runs before the simulation is reset, so this reads the pose the
+    # episode actually finished in.
+    from .standing import fallen_mask  # Local: keeps this module import-light.
+
+    episode_steps = env.episode_length_buf[env_ids].float()
+    judged = episode_steps >= 0.5 * env.max_episode_length
+    ended_up = judged & (fallen_mask(env) < 0.5)
+    if env.common_step_counter == 0:
+        # The very first reset has no completed episode behind it -- the length
+        # buffer still holds its randomized initial value and no distance has been
+        # travelled -- so judging it would demote half the fleet before the run
+        # starts.
+        ended_up = torch.zeros_like(ended_up)
+
+    move_up = ended_up & (distance > 1.0)
     # Reverse-curriculum episodes are excluded rather than measured against the bar.
     # A third of episodes begin on the ground on purpose -- folded and told to stay
     # flat, or folded and told to stand up -- and travel nothing by design.
@@ -324,7 +348,7 @@ def terrain_levels_vel_strict(
     # Downgrade: essentially no travel at all. This used to be a fraction of the
     # commanded distance over a nominal 20 s episode, which fired on every robot
     # in the run no matter how well it walked.
-    move_down = (distance < 0.1) & ~move_up
+    move_down = ended_up & (distance < 0.1) & ~move_up
     if spawned_on_ground is not None:
         move_down = move_down & ~spawned_on_ground[env_ids].bool()
 
