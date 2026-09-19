@@ -305,11 +305,8 @@ def terrain_levels_vel_strict(
     else:
         distance = travelled[env_ids]
 
-    cmd_speed = torch.norm(command[env_ids, :2], dim=1)
-
-    # Upgrade: crossed half the tile width
-    # Absolute bars, set where this robot actually operates. The old pair was
-    # unreachable: promotion wanted half the 8 m tile, and demotion fired below
+    # Upgrade: absolute bars, set where this robot actually operates. The old pair
+    # was unreachable: promotion wanted half the 8 m tile, and demotion fired below
     # cmd_speed * 20 s * 0.33 -- about 2.3 m -- while the robot covers 0.6-0.8 m an
     # episode. So every environment was demoted every episode, the terrain collapsed
     # to row 0, difficulty went to zero, and the machine spent whole runs on ground
@@ -324,9 +321,9 @@ def terrain_levels_vel_strict(
     if spawned_on_ground is not None:
         move_up = move_up & ~spawned_on_ground[env_ids].bool()
 
-    # Downgrade: traveled less than 33% of commanded target distance.
-    # Absolute threshold 鈮?cmd_speed 脳 10m, identical to DreamWaQ / HIMLoco / LocoLeggedWheel
-    # which use 50% 脳 20s episode = 10m. Adjusted for the longer 30s episode here.
+    # Downgrade: essentially no travel at all. This used to be a fraction of the
+    # commanded distance over a nominal 20 s episode, which fired on every robot
+    # in the run no matter how well it walked.
     move_down = (distance < 0.1) & ~move_up
     if spawned_on_ground is not None:
         move_down = move_down & ~spawned_on_ground[env_ids].bool()
