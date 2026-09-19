@@ -70,6 +70,12 @@ MAX_DOWN_TIME = 5.0  # s
 # merely rotating, used by the lateral step reward.
 LATERAL_SPEED_MOVING = 0.10  # m/s
 
+# Height difference between the two wheel axles at which the terrain counts as
+# uneven enough that the legs *must* differ in length to keep the body level.
+UNEVEN_HEIGHT_REFERENCE = 0.03  # m
+
+_WHEEL_BODIES = ("left_wheel_link", "right_wheel_link")
+
 _LEG_JOINTS = (
     "left_hip_joint", "left_thigh_joint", "left_knee_joint",
     "right_hip_joint", "right_thigh_joint", "right_knee_joint",
@@ -176,17 +182,45 @@ def body_level_error(
     """Cost of tilting the body away from world vertical, in radians.
 
     The body's z axis must stay upright rather than following the slope: tilt in
-    roll is always charged, so the machine cannot simply lie along a bank, while
-    a forward lean is free up to ``forward_allowance`` because that is what a
-    wheeled robot does under acceleration. Leaning *backwards* costs extra, since
-    that is the wheelie that ends an episode under a large forward command.
+    roll is always charged, so the machine cannot simply lie along a bank, and
+    pitch is charged as well once past the forward allowance. The allowance
+    itself scales with speed, so a parked robot must be level while a moving one
+    may lean forward to resist pitching over backwards.
 
     Ramped linearly rather than squared: a squared tilt cost is flat near upright
     and cannot pull back the steady bias that rolling on a slope produces.
     """
     roll, pitch = body_tilt(env)
-    forward_excess = torch.clamp(-pitch - forward_allowance, min=0.0)
+    allowed = forward_allowance * crouch_gate(env)
+    forward_excess = torch.clamp(-pitch - allowed, min=0.0)
     return torch.abs(roll) + backward_scale * torch.clamp(pitch, min=0.0) + forward_excess
+
+
+def wheel_height_difference(env, asset_cfg=None):
+    """Height difference between the two wheel axles, in metres.
+
+    This measures how unevenly the ground supports the robot rather than how the
+    body is oriented: a robot tilted along a bank and a robot held level on the
+    same bank see the same axle difference. That makes it the right signal for
+    "the legs must now differ in length".
+    """
+    if asset_cfg is None:
+        raise ValueError(
+            "wheel_height_difference needs asset_cfg with body_names="
+            f"{_WHEEL_BODIES} so the body ids are resolved by the manager"
+        )
+    asset = env.scene[asset_cfg.name]
+    z = asset.data.body_link_pos_w[:, asset_cfg.body_ids, 2]
+    return torch.abs(z[:, 0] - z[:, 1])
+
+
+def terrain_unevenness_gate(env, asset_cfg=None, reference=UNEVEN_HEIGHT_REFERENCE):
+    """0 on level ground, 1 once the wheels differ by ``reference`` metres.
+
+    Used to switch *off* the symmetry requirement where asymmetry is required.
+    """
+    difference = wheel_height_difference(env, asset_cfg)
+    return torch.clamp(difference / reference, 0.0, 1.0)
 
 
 def standing_pose_error(env):
@@ -252,8 +286,14 @@ def lateral_command_demand(env, command_name="twist", reference=LATERAL_COMMAND_
     return torch.clamp(torch.abs(command[:, 1]) / reference, 0.0, 1.0)
 
 
-def leg_symmetry_error(env, command_name="twist", lateral_reference=LATERAL_COMMAND_REF):
-    """How differently the two legs are posed, relaxed for sideways travel.
+def leg_symmetry_error(
+    env,
+    command_name="twist",
+    lateral_reference=LATERAL_COMMAND_REF,
+    asset_cfg=None,
+    uneven_reference=UNEVEN_HEIGHT_REFERENCE,
+):
+    """How differently the two legs are posed, where that difference is wrong.
 
     The hip axes are *not* mirrored in the model (both are ``+X``), so a
     mirror-symmetric pair needs ``left_hip == -right_hip`` and the hip term is the
@@ -261,10 +301,12 @@ def leg_symmetry_error(env, command_name="twist", lateral_reference=LATERAL_COMM
     the lateral offset, so equal angles are already mirror-symmetric and their
     term is the difference.
 
-    A two-wheel differential robot cannot roll sideways, so sideways travel has to
-    be *stepped*: one leg lifts while the other supports. That asymmetry is
-    correct, so the requirement fades out as the sideways command grows and stays
-    in force for forward, backward and turning commands.
+    Equal leg length is only correct on level ground. When the two wheels rest at
+    different heights -- a lateral bank, or the two faces of a step -- the body
+    can only stay level if the leg on the high side retracts and the leg on the
+    low side extends, which is exactly a thigh/knee difference. The requirement
+    therefore fades out with the *measured* axle height difference, and
+    separately with a sideways command, since sideways travel has to be stepped.
     """
     asset = env.scene["wheelleg"]
     ids, _ = asset.find_joints(_LEG_JOINTS, preserve_order=True)
@@ -276,7 +318,8 @@ def leg_symmetry_error(env, command_name="twist", lateral_reference=LATERAL_COMM
     )
     weights = mismatch.new_tensor(_SYMMETRY_WEIGHTS)
     error = torch.mean(torch.square(mismatch) * weights, dim=1)
-    return error * (1.0 - lateral_command_demand(env, command_name, lateral_reference))
+    level_ground = 1.0 - terrain_unevenness_gate(env, asset_cfg, uneven_reference)
+    return error * level_ground * (1.0 - lateral_command_demand(env, command_name, lateral_reference))
 
 
 def lateral_step_reward(

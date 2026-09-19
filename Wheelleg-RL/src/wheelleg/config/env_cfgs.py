@@ -92,13 +92,18 @@ def _posture_contract(cfg, enforce_standing=True):
                 "sensor_name": "feet_ground_contact",
             },
         )
-        # Keep the two legs posed alike. The weight is deliberately small: on a
-        # slope the two legs must differ in length for the body to stay level, so
-        # a strong symmetry term fights the very articulation the terrain needs.
+        # Keep the two legs posed alike *where that is correct*. The weight is
+        # small and the term is switched off entirely once the two wheels sit at
+        # different heights, because levelling the body on a bank or across a step
+        # requires the high-side leg to retract and the low-side leg to extend.
         cfg.rewards["leg_symmetry"] = RewardTermCfg(
             func=standing.leg_symmetry_error,
             weight=-1.0,
-            params={"command_name": "twist"},
+            params={
+                "command_name": "twist",
+                "asset_cfg": SceneEntityCfg("wheelleg", body_names=standing._WHEEL_BODIES),
+                "uneven_reference": standing.UNEVEN_HEIGHT_REFERENCE,
+            },
         )
         # Keep the body's z axis vertical instead of letting it follow the slope.
         # Ramped linearly in radians so it can actually pull back the steady tilt
@@ -118,6 +123,10 @@ def _posture_contract(cfg, enforce_standing=True):
         # pays the policy to lift its wheels off the ground, so it is removed
         # rather than retuned.
         cfg.rewards.pop("feet_air_time", None)
+        # `joint_mirror` mirrors the thigh/knee pairs, which is the same quantity
+        # leg_symmetry now measures correctly and gates on terrain, so it would
+        # fight the level-adaptation this task needs.
+        cfg.rewards.pop("joint_mirror", None)
         # The rough recipe's abduction mirror takes the difference of the two hip
         # angles. With unmirrored hip axes that rewards the sideways tilt and
         # penalises the mirror-symmetric splay, so it is dropped in favour of the
@@ -131,6 +140,10 @@ def _posture_contract(cfg, enforce_standing=True):
     cfg.metrics["wheel_contact_fraction"] = MetricsTermCfg(func=standing.wheel_contact_fraction)
     cfg.metrics["lateral_command"] = MetricsTermCfg(func=standing.lateral_command_demand)
     cfg.metrics["body_level_error"] = MetricsTermCfg(func=standing.body_level_error)
+    cfg.metrics["wheel_height_diff_m"] = MetricsTermCfg(
+        func=standing.wheel_height_difference,
+        params={"asset_cfg": SceneEntityCfg("wheelleg", body_names=standing._WHEEL_BODIES)},
+    )
     return cfg
 
 

@@ -155,51 +155,95 @@ class PoseTests(unittest.TestCase):
         self.assertGreater(standing.standing_pose_error(env)[0].item(), 0.0)
 
 
-def _sym_env(hip_l, thigh_l, knee_l, hip_r, thigh_r, knee_r, command=(1.0, 0.0, 0.0)):
+def _sym_env(hip_l, thigh_l, knee_l, hip_r, thigh_r, knee_r, command=(1.0, 0.0, 0.0),
+             wheel_z=(0.0, 0.0)):
     q = torch.tensor([[hip_l, thigh_l, knee_l, hip_r, thigh_r, knee_r]])
     cmd = torch.tensor([[float(v) for v in command]])
+    z = torch.zeros(1, 2, 3)
+    z[0, :, 2] = torch.tensor([float(v) for v in wheel_z])
     return SimpleNamespace(
         num_envs=1,
         command_manager=SimpleNamespace(get_command=lambda name: cmd),
-        scene={"wheelleg": SimpleNamespace(
-            data=SimpleNamespace(joint_pos=q),
-            find_joints=lambda names, preserve_order: (list(range(6)), names))})
+        scene={
+            "wheelleg": SimpleNamespace(
+                data=SimpleNamespace(
+                    joint_pos=q,
+                    body_link_pos_w=z,
+                    root_link_lin_vel_b=torch.zeros(1, 3),
+                ),
+                find_joints=lambda names, preserve_order: (list(range(6)), names)),
+        })
 
 
 class SymmetryTests(unittest.TestCase):
-    def _mirrored(self):
+    def _asset(self):
+        # The SceneEntityCfg the manager would have resolved for the two wheels.
+        return SimpleNamespace(name="wheelleg", body_ids=[0, 1])
+
+    def _mirrored(self, **kwargs):
         # The hip axes are not mirrored in the model, so a level pair is L = -R.
-        return _sym_env(0.1, 0.85, -1.23, -0.1, 0.85, -1.23)
+        return _sym_env(0.1, 0.85, -1.23, -0.1, 0.85, -1.23, **kwargs)
 
     def test_mirrored_legs_have_no_error(self):
-        self.assertAlmostEqual(standing.leg_symmetry_error(self._mirrored())[0].item(), 0.0,
-                               places=9)
+        env = self._mirrored()
+        self.assertAlmostEqual(
+            standing.leg_symmetry_error(env, asset_cfg=self._asset())[0].item(), 0.0, places=9)
 
     def test_same_sign_hips_are_treated_as_a_tilt(self):
-        tilted = _sym_env(0.2, 0.85, -1.23, 0.2, 0.85, -1.23)
-        self.assertGreater(standing.leg_symmetry_error(tilted)[0].item(), 0.0)
+        env = _sym_env(0.2, 0.85, -1.23, 0.2, 0.85, -1.23)
+        self.assertGreater(
+            standing.leg_symmetry_error(env, asset_cfg=self._asset())[0].item(), 0.0)
 
     def test_thigh_and_knee_mismatch_is_penalised_more_than_hips(self):
+        asset = self._asset()
         knee = _sym_env(0.0, 0.85, -1.23, 0.0, 0.85, -0.93)
         hip = _sym_env(0.3, 0.85, -1.23, -0.3, 0.85, -1.23)
-        self.assertGreater(standing.leg_symmetry_error(knee)[0].item(),
-                           standing.leg_symmetry_error(hip)[0].item())
+        self.assertGreater(
+            standing.leg_symmetry_error(knee, asset_cfg=asset)[0].item(),
+            standing.leg_symmetry_error(hip, asset_cfg=asset)[0].item())
 
     def test_step_mismatch_scales_with_the_difference(self):
+        asset = self._asset()
         small = _sym_env(0.0, 0.85, -1.23, 0.0, 0.65, -1.23)
         large = _sym_env(0.0, 0.85, -1.23, 0.0, 0.35, -1.23)
-        self.assertGreater(standing.leg_symmetry_error(large)[0].item(),
-                           standing.leg_symmetry_error(small)[0].item())
+        self.assertGreater(
+            standing.leg_symmetry_error(large, asset_cfg=asset)[0].item(),
+            standing.leg_symmetry_error(small, asset_cfg=asset)[0].item())
 
-    def test_forward_commands_still_demand_symmetry(self):
-        stepped = _sym_env(0.0, 0.85, -1.23, 0.0, 0.45, -1.23, command=(1.0, 0.0, 0.0))
-        self.assertGreater(standing.leg_symmetry_error(stepped)[0].item(), 0.0)
+    def test_forward_commands_on_level_ground_demand_symmetry(self):
+        env = _sym_env(0.0, 0.85, -1.23, 0.0, 0.45, -1.23, command=(1.0, 0.0, 0.0))
+        self.assertGreater(
+            standing.leg_symmetry_error(env, asset_cfg=self._asset())[0].item(), 0.0)
 
     def test_sideways_commands_release_symmetry_for_stepping(self):
         """Sideways travel has to step, so the mismatch is legitimate there."""
-        stepped = _sym_env(0.0, 0.85, -1.23, 0.0, 0.45, -1.23,
-                           command=(0.0, standing.LATERAL_COMMAND_REF, 0.0))
-        self.assertEqual(standing.leg_symmetry_error(stepped)[0].item(), 0.0)
+        env = _sym_env(0.0, 0.85, -1.23, 0.0, 0.45, -1.23,
+                       command=(0.0, standing.LATERAL_COMMAND_REF, 0.0))
+        self.assertEqual(
+            standing.leg_symmetry_error(env, asset_cfg=self._asset())[0].item(), 0.0)
+
+    def test_uneven_ground_releases_symmetry_so_the_body_can_stay_level(self):
+        """Wheels at different heights: the legs must be allowed to differ."""
+        env = _sym_env(0.0, 0.85, -1.23, 0.0, 0.45, -1.23,
+                       wheel_z=(standing.UNEVEN_HEIGHT_REFERENCE, 0.0))
+        self.assertEqual(
+            standing.leg_symmetry_error(env, asset_cfg=self._asset())[0].item(), 0.0)
+
+    def test_a_gentle_bank_only_partly_releases_symmetry(self):
+        env = _sym_env(0.0, 0.85, -1.23, 0.0, 0.45, -1.23,
+                       wheel_z=(standing.UNEVEN_HEIGHT_REFERENCE / 2, 0.0))
+        level = _sym_env(0.0, 0.85, -1.23, 0.0, 0.45, -1.23)
+        asset = self._asset()
+        self.assertAlmostEqual(
+            standing.leg_symmetry_error(env, asset_cfg=asset)[0].item(),
+            0.5 * standing.leg_symmetry_error(level, asset_cfg=asset)[0].item(),
+            places=6)
+
+    def test_wheel_height_difference_ignores_body_attitude(self):
+        """It measures the ground, so tilting the body does not change it."""
+        env = _sym_env(0.0, 0.85, -1.23, 0.0, 0.85, -1.23, wheel_z=(0.02, -0.02))
+        self.assertAlmostEqual(
+            standing.wheel_height_difference(env, self._asset())[0].item(), 0.04, places=6)
 
 
 class WheelSupportTests(unittest.TestCase):
