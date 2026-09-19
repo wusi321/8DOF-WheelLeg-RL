@@ -164,13 +164,17 @@ def _posture_contract(cfg, enforce_standing=True):
         # Keep the body's z axis vertical instead of letting it follow the slope.
         # Ramped linearly in radians so it can actually pull back the steady tilt
         # that rolling along a bank produces; a squared cost is flat near upright.
+        # Scaled down while fallen *and* told to stand: a wedged chassis cannot
+        # level itself, and at full weight this was the largest term in the whole
+        # economy, which is what made "stop moving" the cheapest policy.
         cfg.rewards["body_level"] = RewardTermCfg(
-            func=standing.body_level_error,
+            func=standing.body_level_error_recovery_scaled,
             weight=-10.0,
             params={
                 "forward_allowance": standing.FORWARD_LEAN_ALLOWANCE,
                 "backward_scale": standing.BACKWARD_LEAN_SCALE,
                 "max_cost": standing.MAX_TILT_COST,
+                "scale": standing.FALLEN_ATTEMPT_SCALE,
             },
         )
         cfg.rewards["standing_pose"] = RewardTermCfg(
@@ -189,9 +193,12 @@ def _posture_contract(cfg, enforce_standing=True):
             params={"ceiling": standing.HEIGHT_CEILING},
         )
         # A flat tax on staying down. Without it, lying still is cheap while
-        # attempting a recovery pays the attempt taxes below.
+        # attempting a recovery pays the attempt taxes below. Raised alongside the
+        # shortened down window: `body_level` now contributes almost nothing while
+        # down, so this is what keeps "stay on the ground when told to stand" from
+        # becoming the free option.
         cfg.rewards["fallen_tax"] = RewardTermCfg(
-            func=standing.fallen_tax, weight=-0.5)
+            func=standing.fallen_tax, weight=-1.0)
         # One-shot bounty for finishing the stand, with a reachable definition
         # (25 degrees and 0.11 m, not the full 0.145 m stance).
         cfg.rewards["recovery_success"] = RewardTermCfg(

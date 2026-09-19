@@ -162,6 +162,35 @@ class EnvironmentConfigTests(unittest.TestCase):
                      "standing.upright_progress", "standing.height_progress"):
             self.assertIn(name, cfg)
 
+    def test_body_level_is_muted_only_for_a_failed_fall(self):
+        """A robot told to stand is the one that gets the allowance, not a folded one.
+
+        A folded-commanded robot must still lie *flat* on the ground, so its level
+        requirement keeps full weight; only the failed fall -- down while standing
+        is commanded -- gets the attempt scale.
+        """
+        source = (root / "src/wheelleg/mdp/standing.py").read_text(encoding="utf-8")
+        self.assertIn("def recovery_scale", source)
+        self.assertIn("fallen_mask(env).bool() & (standing_command(env) > 0.5)", source)
+        self.assertIn("def body_level_error_recovery_scaled", source)
+        cfg = (root / "src/wheelleg/config/env_cfgs.py").read_text(encoding="utf-8")
+        self.assertIn("func=standing.body_level_error_recovery_scaled", cfg)
+        # The logged metric must stay the unscaled tilt, or the muting hides itself.
+        self.assertIn(
+            'cfg.metrics["body_level_error"] = MetricsTermCfg(func=standing.body_level_error)',
+            cfg,
+        )
+
+    def test_down_window_is_short(self):
+        """Every second down is a second of gradient saying 'hold still'."""
+        import re
+
+        source = (root / "src/wheelleg/mdp/standing.py").read_text(encoding="utf-8")
+        for name in ("MAX_DOWN_TIME", "FOLD_STAND_DEADLINE"):
+            match = re.search(rf"^{name} = ([\d.]+)", source, re.MULTILINE)
+            self.assertIsNotNone(match, f"{name} is missing")
+            self.assertLessEqual(float(match.group(1)), 3.0)
+
     def test_terrain_difficulty_never_starts_at_zero(self):
         """Difficulty 0 makes obstacle terrains literally flat."""
         source = (root / "src/wheelleg/config/env_cfgs.py").read_text(encoding="utf-8")

@@ -477,8 +477,17 @@ FOLD_TOLERANCE = 0.20  # rad per joint
 # Once the legs are folded, the robot has this long to be upright again before
 # the environment is recycled; MAX_DOWN_TIME is the backstop for a fall that
 # never reaches the folded pose at all.
+#
+# The backstop is deliberately short. A chassis wedged on a corner cannot act its
+# way out of the pose it is in, so every second it spends down is a second of
+# gradient that says "hold still": at 6 s, ``body_level`` alone accumulated about
+# -38 of a -61 episode and the policy annealed to a frozen heap instead of
+# standing up. A short window also multiplies the number of recovery attempts per
+# iteration, and shrinks each failed attempt's accumulated penalty relative to
+# the one-shot stand-up bounty -- the quantity that has to win for a recovery to
+# ever be discovered.
 FOLD_STAND_DEADLINE = 2.0  # s
-MAX_DOWN_TIME = 6.0  # s
+MAX_DOWN_TIME = 2.5  # s
 # Attempt taxes are reduced, never removed, while the robot is down.
 FALLEN_ATTEMPT_SCALE = 0.1
 
@@ -663,6 +672,36 @@ def attempt_scale(env, scale=FALLEN_ATTEMPT_SCALE):
     fallen = fallen_mask(env).bool()
     return torch.where(fallen, torch.full_like(fallen, scale, dtype=torch.float),
                        torch.ones_like(fallen, dtype=torch.float))
+
+
+def recovery_scale(env, scale=FALLEN_ATTEMPT_SCALE):
+    """Multiplier for gait terms charged to a *failed* fall.
+
+    ``attempt_scale`` fires for any fallen environment, which is right for the
+    smoothness taxes: flailing on the ground is not a gait choice whatever the
+    posture command says. This one is narrower. It fires only while the robot is
+    down *and* has been told to stand, which is the state it is actively trying
+    to leave and the only state in which these terms cannot be acted on.
+
+    The distinction matters for orientation terms. A folded-commanded robot is
+    *supposed* to be on the ground and still has to lie flat on it, so its level
+    requirement keeps full weight. A robot told to stand that is already down gets
+    no usable gradient from them, and charging the full tilt cost made
+    ``body_level`` the largest term in the entire economy -- roughly -38 of a -61
+    episode -- so the cheapest way to improve was to stop moving.
+    """
+    fall = fallen_mask(env).bool() & (standing_command(env) > 0.5)
+    return torch.where(fall, torch.full_like(fall, scale, dtype=torch.float),
+                       torch.ones_like(fall, dtype=torch.float))
+
+
+def body_level_error_recovery_scaled(env, scale=FALLEN_ATTEMPT_SCALE, **kwargs):
+    """``body_level_error`` with the failed-fall allowance applied.
+
+    The unscaled form stays the logged metric, so the tilt the robot is actually
+    holding is still visible while this reward term is muted.
+    """
+    return body_level_error(env, **kwargs) * recovery_scale(env, scale)
 
 
 # Reverse-curriculum spawn states. The poses and their rest heights are geometry,
