@@ -244,21 +244,40 @@ class EnvironmentConfigTests(unittest.TestCase):
             self.assertNotIn("[folded[0], folded[1], folded[2]] * 2", source)
             self.assertNotIn("FOLDED_STANCE * 2", source)
 
-    def test_every_spawn_dictates_the_posture_it_is_given(self):
+    def test_every_spawn_dictates_where_its_posture_starts_and_goes(self):
         """The event manager runs before the command manager, so they must couple.
 
-        Without it a standing spawn is handed a folded command about two times in
-        three, and the action offset drags its legs out on the first step.
+        Without it a standing spawn is handed a folded command and the action
+        offset drags its legs out on the first step. And it takes *two* values: a
+        spawn folded and told to stand must start folded and ramp up, because that
+        transition is the get-up. Starting alpha at the commanded value made the
+        legs jump instead.
         """
         source = (root / "src/wheelleg/mdp/standing.py").read_text(encoding="utf-8")
-        self.assertIn("env._spawn_posture[env_ids] = torch.where(", source)
+        self.assertIn("env._spawn_alpha[env_ids] = torch.where(", source)
+        self.assertIn("env._spawn_command[env_ids] = torch.where(", source)
         posture = (root / "src/wheelleg/mdp/posture.py").read_text(encoding="utf-8")
-        self.assertIn('forced = getattr(self._env, "_spawn_posture", None)', posture)
-        # Consumed, so a mid-episode resample is a free draw again.
-        self.assertIn('forced[env_ids] = float("nan")', posture)
+        self.assertIn('pose = getattr(self._env, "_spawn_alpha", None)', posture)
+        self.assertIn('want = getattr(self._env, "_spawn_command", None)', posture)
+        # Both consumed, so a mid-episode resample is a free draw again.
+        self.assertIn('pose[env_ids] = float("nan")', posture)
+        self.assertIn('want[env_ids] = float("nan")', posture)
+        # The start and the goal must be separate assignments, or there is no ramp.
+        self.assertIn("self.alpha[env_ids] = alpha", posture)
+        self.assertIn("self._target[env_ids] = command", posture)
         # And the posture must travel rather than jump.
         self.assertIn("def _update_command", posture)
         self.assertIn("torch.clamp(self._target - self.alpha, -step, step)", posture)
+
+    def test_the_crouch_sits_where_the_interpolation_passes(self):
+        """The crouch is the midpoint, so a crouch spawn starts at alpha 0.5."""
+        mid = tuple(
+            0.5 * (folded + standing)
+            for folded, standing in zip(stance.FOLDED_STANCE, stance.NOMINAL_STANCE)
+        )
+        for computed, stored in zip(mid, stance.CROUCH_STANCE):
+            self.assertAlmostEqual(computed, stored, places=3)
+        self.assertAlmostEqual(stance.CROUCH_ALPHA, 0.5)
 
     def test_leg_action_scale_stays_in_a_usable_band(self):
         """Small enough not to open the policy in a falling regime, large enough to act.
@@ -298,7 +317,7 @@ class EnvironmentConfigTests(unittest.TestCase):
         self.assertNotIn("folded_fraction", posture)
         # Standing is the only command a running episode issues; the folded pose
         # can only arrive from a spawn.
-        self.assertIn("value = torch.ones(len(env_ids), device=self.device)", posture)
+        self.assertIn("command = torch.ones(len(env_ids), device=self.device)", posture)
 
     def test_tracking_is_gated_on_clearance_not_on_tilt(self):
         """Gating on tilt withdrew the walking payment precisely while walking.

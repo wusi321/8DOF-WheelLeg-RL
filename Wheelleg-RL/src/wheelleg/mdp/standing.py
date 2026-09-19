@@ -24,6 +24,7 @@ it, measured by a single downward ray. See ``wheelleg.stance`` for the geometry.
 import torch
 
 from ..stance import (
+    CROUCH_ALPHA,
     CROUCH_SPAWN_Z,
     CROUCH_STANCE,
     FOLDED_REST_Z,
@@ -787,14 +788,16 @@ def spawn_fallen_state(
     prone rarely finds itself.
 
     Each spawn also *chooses the posture command* it is about to be given,
-    through ``env._spawn_posture``. That coupling is not cosmetic: the event
-    manager runs before the command manager inside ``_reset_idx``, so without it
-    the two are drawn independently and a standing spawn is handed a folded
-    command most of the time -- at which point the action offset drags its legs
-    out from under it and it face-plants on the first step. A folded spawn is
-    told to stand (the get-up task) with probability ``1 - folded_hold_probability``
-    and to stay folded otherwise, which is what trains the flat, wheels-stowed
-    pose itself.
+    through ``env._spawn_alpha`` (where the posture starts, matching the pose just
+    written) and ``env._spawn_command`` (where it is told to go). That coupling is
+    not cosmetic: the event manager runs before the command manager inside
+    ``_reset_idx``, so without it the two are drawn independently and a standing
+    spawn is handed a folded command most of the time -- at which point the action
+    offset drags its legs out from under it and it face-plants on the first step.
+    Two values rather than one because a spawn folded and told to stand has to
+    start folded and ramp up: that transition is the get-up itself. A folded spawn
+    is told to stand with probability ``1 - folded_hold_probability`` and to stay
+    folded otherwise, which is what trains the flat, wheels-stowed pose itself.
     """
     from mjlab.envs.mdp.events import resolve_env_ids  # Lazy: keeps this pure.
 
@@ -808,14 +811,29 @@ def spawn_fallen_state(
     crouch = (draw >= folded_probability) & (draw < folded_probability + crouch_probability)
     selected = folded | crouch
 
-    # Tell each spawn which posture it will be commanded into. Everything except
-    # a folded spawn held flat is told to stand, including the standing spawns.
-    if not hasattr(env, "_spawn_posture"):
-        env._spawn_posture = torch.full(
+    # Tell each spawn where its posture starts and where it is told to go. Both
+    # matter: a spawn folded and told to stand must start folded and ramp up,
+    # because that transition *is* the get-up, and starting alpha at the commanded
+    # value instead snapped the offset to the standing stance in one step and made
+    # the legs jump. A folded spawn held flat is told to stay. Everything else
+    # starts standing; the crouch starts halfway, which is where it sits on the
+    # interpolation.
+    if not hasattr(env, "_spawn_alpha"):
+        env._spawn_alpha = torch.full(
+            (env.num_envs,), float("nan"), device=env.device
+        )
+        env._spawn_command = torch.full(
             (env.num_envs,), float("nan"), device=env.device
         )
     hold = torch.rand(len(env_ids), device=env.device) < folded_hold_probability
-    env._spawn_posture[env_ids] = torch.where(
+    env._spawn_alpha[env_ids] = torch.where(
+        folded,
+        torch.zeros_like(draw),
+        torch.where(
+            crouch, torch.full_like(draw, CROUCH_ALPHA), torch.ones_like(draw)
+        ),
+    )
+    env._spawn_command[env_ids] = torch.where(
         folded & hold, torch.zeros_like(draw), torch.ones_like(draw)
     )
 

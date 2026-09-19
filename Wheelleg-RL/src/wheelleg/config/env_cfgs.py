@@ -12,13 +12,13 @@ from ..mdp.posture import POSTURE_COMMAND_NAME, PostureCommandCfg, posture_pose_
 def _posture_command(cfg):
     """Add the commanded posture and make the leg action follow it.
 
-    The leg action is a delta from the standing stance. With the raised action
-    scale a quarter of each joint's travel, so commanding the folded pose
-    from there needs raw actions of +7.26 / -5.55 against an initial action std
-    of 0.80. The policy therefore cannot choose to fold, and a folded spawn only
-    lasts until the actuators drag the legs back to the stance. With the offset
-    following the command, zero action means "hold the commanded posture" and
-    both lying down and standing up become small-correction problems.
+    The leg action is a delta from the standing stance, worth 0.12 of each joint's
+    travel per unit action. Commanding the folded pose from there still needs raw
+    actions around +5 sigma against the initial standard deviation of 0.80, and a
+    folded spawn otherwise lasts only until the actuators drag the legs back to
+    the stance. With the offset following the command, zero action means "hold the
+    commanded posture" instead, so folding and standing up are small-correction
+    problems rather than an exploration problem.
     """
     cfg.commands[POSTURE_COMMAND_NAME] = PostureCommandCfg(
         resampling_time_range=(5.0, 10.0),

@@ -252,6 +252,11 @@ FOLDED_REST_Z = 0.002
 CROUCH_STANCE = (0.4538, 1.0776, -1.9267)
 CROUCH_SPAWN_Z = clearance(CROUCH_STANCE[1], CROUCH_STANCE[2], CROUCH_STANCE[0])
 SPAWN_MARGIN = 0.002
+# The crouch is the arithmetic midpoint of the two stances, so it is the posture
+# fraction 0.5 and the interpolated leg targets pass exactly through it. It is a
+# spawn condition only: holding it and rolling in it tips the machine onto its
+# back, because unlike the two ends it was never solved for axle position.
+CROUCH_ALPHA = 0.5
 
 # ---------------------------------------------------------------------------
 # Left/right expansion: the single place the mirror convention lives.

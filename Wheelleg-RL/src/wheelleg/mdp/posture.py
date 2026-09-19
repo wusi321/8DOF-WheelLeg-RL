@@ -93,23 +93,31 @@ class PostureCommand(CommandTerm):
   def _resample_command(self, env_ids: torch.Tensor) -> None:
     # Standing is the default and the only command a running episode issues; the
     # folded pose can only arrive from a spawn. The pose an environment was just
-    # spawned in therefore decides its first command, which the event manager
-    # leaves behind because it runs before this term inside ``_reset_idx``.
+    # spawned in therefore fixes where its posture *starts*, which the event
+    # manager leaves behind because it runs before this term inside ``_reset_idx``.
     # Without that coupling the two are drawn independently and a standing spawn
     # is handed a folded command, at which point the action offset drags its legs
     # out from under it on the very first step: a guaranteed face-plant that
-    # taught the policy that standing is hopeless. The flag is consumed here so
-    # later resamples mid-episode are free again.
-    value = torch.ones(len(env_ids), device=self.device)
-    forced = getattr(self._env, "_spawn_posture", None)
-    if forced is not None:
-      override = forced[env_ids]
-      value = torch.where(torch.isnan(override), value, override)
-      forced[env_ids] = float("nan")
-    self._target[env_ids] = value
-    # Start *at* the spawned posture: a ramp from a stale value would move the
-    # legs before the episode has begun.
-    self.alpha[env_ids] = value
+    # taught the policy that standing is hopeless.
+    #
+    # Two values, not one. A spawn folded and told to stand has to *start* folded
+    # and ramp up -- that transition is the get-up this task exists for. Starting
+    # alpha at the commanded value instead snapped the offset to the standing
+    # stance in a single step, so the legs jumped and the ramp never ran in the
+    # one case it mattered most. Both are consumed here, so a mid-episode resample
+    # is a free draw again.
+    alpha = torch.ones(len(env_ids), device=self.device)
+    command = torch.ones(len(env_ids), device=self.device)
+    pose = getattr(self._env, "_spawn_alpha", None)
+    want = getattr(self._env, "_spawn_command", None)
+    if pose is not None and want is not None:
+      start, goal = pose[env_ids], want[env_ids]
+      alpha = torch.where(torch.isnan(start), alpha, start)
+      command = torch.where(torch.isnan(goal), command, goal)
+      pose[env_ids] = float("nan")
+      want[env_ids] = float("nan")
+    self.alpha[env_ids] = alpha
+    self._target[env_ids] = command
 
   def _update_command(self) -> None:
     """Ramp the commanded posture towards its target instead of jumping.
