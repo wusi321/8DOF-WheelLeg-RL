@@ -263,11 +263,26 @@ class EnvironmentConfigTests(unittest.TestCase):
         self.assertIn('pose[env_ids] = float("nan")', posture)
         self.assertIn('want[env_ids] = float("nan")', posture)
         # The start and the goal must be separate assignments, or there is no ramp.
-        self.assertIn("self.alpha[env_ids] = alpha", posture)
         self.assertIn("self._target[env_ids] = command", posture)
+        self.assertIn("reset = ~torch.isnan(start)", posture)
         # And the posture must travel rather than jump.
         self.assertIn("def _update_command", posture)
         self.assertIn("torch.clamp(self._target - self.alpha, -step, step)", posture)
+
+    def test_a_timer_resample_may_not_move_the_posture_directly(self):
+        """Only a reset may set alpha; a mid-episode tick may only set the target.
+
+        Assigning alpha unconditionally snapped a robot holding the folded pose
+        upright in a single step when its command was resampled, which is the jolt
+        the ramp exists to prevent, and it was visible in play as a sudden jump
+        from lying to standing partway through an episode.
+        """
+        posture = (root / "src/wheelleg/mdp/posture.py").read_text(encoding="utf-8")
+        self.assertIn(
+            "self.alpha[env_ids] = torch.where(reset, start, self.alpha[env_ids])",
+            posture,
+        )
+        self.assertNotIn("self.alpha[env_ids] = alpha", posture)
 
     def test_the_crouch_sits_where_the_interpolation_passes(self):
         """The crouch is the midpoint, so a crouch spawn starts at alpha 0.5."""

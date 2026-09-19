@@ -223,6 +223,16 @@ uv run play Wheelleg-Rough-v0 \
   --num-envs 1 --viewer viser
 ```
 
+### 手动控制移动速度（visor 里的 `Enable`）
+
+visor 左侧面板里 `Twist` 文件夹下**第一项是 `Enable` 复选框，默认是关的**。**不勾它，三个速度滑块（`lin_vel_x` / `lin_vel_y` / `ang_vel_z`）完全不起作用**，机器人只会按环境自己采样的随机指令走。
+
+勾上之后行为是：
+
+- 滑块值**每步覆盖当前选中环境**的指令（`velocity_command.py` 的 `compute` 在重采样之后覆写），所以它能压住定时重采样，不会被随机指令顶掉；
+- **只对当前选中的那一个环境生效**，`--num-envs 4` 时要先在视图里选中目标环境；
+- `Max <axis>` 滑块改的是三个速度滑块的范围上限（默认取指令范围的 max），`Zero` 按钮一键归零。
+
 录制视频：
 
 ```bash
