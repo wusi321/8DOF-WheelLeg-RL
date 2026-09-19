@@ -125,7 +125,9 @@ def _posture_contract(cfg, enforce_standing=True):
         # wheel. Both are penalties, not resets, so a fall is still allowed to
         # happen; they only make kneeling unprofitable.
         cfg.rewards["base_contact_penalty"] = RewardTermCfg(
-            func=standing.base_ground_contact_cost, weight=-10.0)
+            func=standing.base_contact_penalty_relieved,
+            weight=-10.0,
+            params={"scale": standing.BASE_CONTACT_RELIEF})
         cfg.rewards["no_wheel_support"] = RewardTermCfg(
             func=standing.no_wheel_support,
             weight=-10.0,
@@ -337,13 +339,18 @@ def flat_env_cfg(play=False):
 def rough_env_cfg(play=False, enforce_standing=True):
     cfg = _base_rough_env_cfg(play=False)
     tg = cfg.scene.terrain.terrain_generator
+    # These are the effective values: they overwrite whatever the base recipe set,
+    # so a change made only in base_env_cfg has no effect on this task. Capped at
+    # 10 cm, which is what the machine can step over from a resting chassis -- it
+    # stands 14.5 cm at the base origin and cannot lift a leg without losing its
+    # support, so the way up a step is to rest the body on it and swing the legs up.
     for name in ("pyramid_stairs", "pyramid_stairs_inv"):
         if name in tg.sub_terrains:
-            tg.sub_terrains[name].step_height_range = (0.0, 0.12)
+            tg.sub_terrains[name].step_height_range = (0.0, 0.10)
     if "random_grid" in tg.sub_terrains:
-        tg.sub_terrains["random_grid"].grid_height_range = (0.0, 0.12)
+        tg.sub_terrains["random_grid"].grid_height_range = (0.0, 0.10)
     if "rc_wall" in tg.sub_terrains:
-        tg.sub_terrains["rc_wall"].wall_height_range = (0.04, 0.12)
+        tg.sub_terrains["rc_wall"].wall_height_range = (0.04, 0.10)
     # Obstacle height is interpolated by difficulty, and difficulty is
     # level/(num_rows-1). With the default range (0.0, 1.0) the easiest level
     # generates *zero-height* obstacles: a pyramid staircase with step_height 0

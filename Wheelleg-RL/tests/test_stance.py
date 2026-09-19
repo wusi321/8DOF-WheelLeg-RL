@@ -97,7 +97,7 @@ class EnvironmentConfigTests(unittest.TestCase):
     def test_locomotion_tasks_enforce_the_standing_contract(self):
         source = (root / "src/wheelleg/config/env_cfgs.py").read_text(encoding="utf-8")
         for term in ("standing.low_posture_locomotion", "standing.standing_height_error",
-                     "standing.base_ground_contact", "standing.moving_gate",
+                     "standing.base_contact_penalty_relieved", "standing.moving_gate",
                      "standing.no_wheel_support", "standing.wheeled_stance_locomotion",
                      "standing.leg_symmetry_error", "standing.lateral_step_reward"):
             self.assertIn(term, source)
@@ -443,6 +443,55 @@ class EnvironmentConfigTests(unittest.TestCase):
         source = (root / "src/wheelleg/mdp/standing.py").read_text(encoding="utf-8")
         self.assertIn("fallen = fallen_mask(env, tilt_gate=fallen_tilt).bool()", source)
         self.assertNotIn("fallen = total_tilt(env) > fallen_tilt", source)
+
+    def test_terrain_difficulty_is_not_diluted(self):
+        """Ten rows spread one range so thin the robot never met a step.
+
+        Difficulty is level/(num_rows-1), and the robot reached row 4 while sitting
+        at level 0.2-0.6 per terrain type -- 0.8 cm steps. Five rows put full
+        difficulty at row 4, where it already is, and everything is capped at the
+        10 cm the geometry allows a two-wheel machine to step over from a rest.
+        """
+        source = (root / "src/wheelleg/config/base_env_cfg.py").read_text(encoding="utf-8")
+        self.assertIn("num_rows=5, num_cols=20, curriculum=True", source)
+        self.assertIn(
+            "PyramidStairsTerrainCfg(proportion=0.15, step_height_range=(0.0, 0.10)", source
+        )
+        self.assertIn(
+            "InvertedPyramidStairsTerrainCfg(proportion=0.25, step_height_range=(0.0, 0.10)",
+            source,
+        )
+        self.assertIn("grid_height_range=(0.0, 0.10)", source)
+        self.assertIn("wall_height_range=(0.04, 0.10)", source)
+        # Ascending stairs are the task; they must not be outnumbered seven to one.
+        self.assertNotIn("(0.0, 0.12)", source)
+        # And the *effective* values live in env_cfgs, which overwrites the base
+        # recipe's ranges. A cap set only in base_env_cfg does nothing for this task,
+        # which is exactly how an earlier attempt at this was silently reverted.
+        cfg = (root / "src/wheelleg/config/env_cfgs.py").read_text(encoding="utf-8")
+        self.assertIn("tg.sub_terrains[name].step_height_range = (0.0, 0.10)", cfg)
+        self.assertIn('tg.sub_terrains["random_grid"].grid_height_range = (0.0, 0.10)', cfg)
+        self.assertIn('tg.sub_terrains["rc_wall"].wall_height_range = (0.04, 0.10)', cfg)
+        self.assertNotIn("(0.0, 0.12)", cfg)
+
+    def test_body_contact_is_free_for_a_robot_that_is_working(self):
+        """A two-wheel machine has to rest its chassis on a step to swing a leg up.
+
+        Four wheels lifting one leg still leave three; two leave one. Gating on
+        "not fallen" alone would charge that strategy, because the ray under a
+        chassis resting on a step reads a centimetre or two and the robot therefore
+        counts as fallen while it climbs.
+        """
+        source = (root / "src/wheelleg/mdp/standing.py").read_text(encoding="utf-8")
+        self.assertIn("def base_contact_relief", source)
+        self.assertIn("up = 1.0 - fallen_mask(env)", source)
+        self.assertIn(
+            "relaxed = torch.maximum(up, (asked > command_threshold).float())", source
+        )
+        self.assertIn("return 1.0 - (1.0 - scale) * relaxed", source)
+        cfg = (root / "src/wheelleg/config/env_cfgs.py").read_text(encoding="utf-8")
+        self.assertIn("standing.base_contact_penalty_relieved", cfg)
+        self.assertIn('"scale": standing.BASE_CONTACT_RELIEF', cfg)
 
     def test_terrain_difficulty_never_starts_at_zero(self):
         """Difficulty 0 makes obstacle terrains literally flat."""

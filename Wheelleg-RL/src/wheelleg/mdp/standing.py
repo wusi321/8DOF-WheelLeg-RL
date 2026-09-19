@@ -857,6 +857,46 @@ def wheel_swing_clearance(
     return cost * (asked > command_threshold).float()
 
 
+# ---------------------------------------------------------------------------
+# Body contact: not a fault, on this machine, unless nothing is being asked.
+#
+# Four wheels lifting one leg still leave three on the ground. Two wheels leave
+# one, so a two-wheel machine cannot swing a leg up without losing its support --
+# the way over a step is to rest the chassis on the step and then step up. That is
+# a deliberate strategy, and charging body contact in full forbids it. So the
+# penalty is left at full weight only for the one state worth discouraging: a robot
+# on its belly with no command, going nowhere.
+# ---------------------------------------------------------------------------
+BASE_CONTACT_RELIEF = 0.1
+"""Share of the body-contact penalty a robot that is working still pays."""
+
+
+def base_contact_relief(
+    env, scale=BASE_CONTACT_RELIEF, command_name="twist", command_threshold=0.1
+):
+    """1 only for a robot that is down and not trying to go anywhere.
+
+    Two conditions relax the penalty, and the second is the one that matters:
+
+    - not fallen at all: a robot that is up and scraping owes nothing;
+    - an active command: a robot working at an obstacle very often *reads* as
+      fallen while it does so, because the ray under the chassis hits the step it
+      is resting on and reports a clearance of a centimetre or two. Gating on
+      "not fallen" alone would therefore charge exactly the strategy this exists to
+      allow, which is the trap this gate is written to avoid.
+    """
+    up = 1.0 - fallen_mask(env)
+    command = env.command_manager.get_command(command_name)
+    asked = torch.norm(command[:, :2], dim=1) + torch.abs(command[:, 2])
+    relaxed = torch.maximum(up, (asked > command_threshold).float())
+    return 1.0 - (1.0 - scale) * relaxed
+
+
+def base_contact_penalty_relieved(env, scale=BASE_CONTACT_RELIEF):
+    """``base_ground_contact_cost``, relaxed while the robot is being asked to move."""
+    return base_ground_contact_cost(env) * base_contact_relief(env, scale)
+
+
 def body_level_error_recovery_scaled(env, scale=FALLEN_ATTEMPT_SCALE, **kwargs):
     """``body_level_error`` with the failed-fall allowance applied.
 

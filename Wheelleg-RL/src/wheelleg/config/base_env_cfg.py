@@ -396,17 +396,31 @@ def rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     cfg.scene.terrain = TerrainEntityCfg(
         terrain_type="generator",
         terrain_generator=TerrainGeneratorCfg(
-            size=(8.0, 8.0), border_width=20.0, num_rows=10, num_cols=20, curriculum=True,
+            # num_rows=5, not 10. Difficulty is level/(num_rows-1), so ten rows spread
+            # the same range over nine steps of 1.3 cm each and the robot only ever
+            # reached row 4: measured per terrain type it sat at level 0.2-0.6, which
+            # is 0.8 cm steps. The curriculum was not hard, it was diluted. Five rows
+            # put full difficulty at row 4, where the robot already is.
+            #
+            # Heights are capped at 10 cm deliberately. The base origin stands 14.5 cm
+            # up and folds flat to 2 mm, and a two-wheel machine cannot lift a leg
+            # without losing its support, so the way over a step is to rest the chassis
+            # on it and swing the legs up. That works at 10 cm; a step taller than the
+            # legs can reach over from a resting chassis does not.
+            size=(8.0, 8.0), border_width=20.0, num_rows=5, num_cols=20, curriculum=True,
             sub_terrains={
                 "flat": BoxFlatTerrainCfg(proportion=0.15, size=(8.0, 8.0)),
-                "pyramid_stairs": BoxPyramidStairsTerrainCfg(proportion=0.05, step_height_range=(0.0, 0.12), step_width=0.30, size=(8.0, 8.0)),
-                "pyramid_stairs_inv": BoxInvertedPyramidStairsTerrainCfg(proportion=0.35, step_height_range=(0.0, 0.12), step_width=0.30, size=(8.0, 8.0)),
-                "random_grid": BoxRandomGridTerrainCfg(proportion=0.27, grid_width=0.45, grid_height_range=(0.0, 0.12), size=(8.0, 8.0)),
+                # Ascending stairs are the task this machine is for -- rest the body on a
+                # step, swing the legs up. They were outnumbered seven to one by the
+                # descending variant, which is much easier.
+                "pyramid_stairs": BoxPyramidStairsTerrainCfg(proportion=0.15, step_height_range=(0.0, 0.10), step_width=0.30, size=(8.0, 8.0)),
+                "pyramid_stairs_inv": BoxInvertedPyramidStairsTerrainCfg(proportion=0.25, step_height_range=(0.0, 0.10), step_width=0.30, size=(8.0, 8.0)),
+                "random_grid": BoxRandomGridTerrainCfg(proportion=0.27, grid_width=0.45, grid_height_range=(0.0, 0.10), size=(8.0, 8.0)),
                 "random_rough": HfRandomUniformTerrainCfg(proportion=0.01, noise_range=(0.0, 0.06), noise_step=0.01, horizontal_scale=0.20, downsampled_scale=0.20, border_width=0.25, base_thickness_ratio=100.0, size=(8.0, 8.0)),
                 "perlin_noise": HfPerlinNoiseTerrainCfg(proportion=0.01, height_range=(0.0, 0.06), octaves=2, persistence=0.4, lacunarity=2.0, horizontal_scale=0.20, resolution=0.20, border_width=0.50, base_thickness_ratio=100.0, size=(8.0, 8.0)),
                 "rc_wall": RCWallTerrainCfg(
                     proportion=0.15,
-                    wall_height_range=(0.04, 0.12),
+                    wall_height_range=(0.04, 0.10),
                     wall_centers_x=(2.1, 3.2, 4.3, 5.4, 6.5),
                     size=(8.0, 8.0),
                 ),
