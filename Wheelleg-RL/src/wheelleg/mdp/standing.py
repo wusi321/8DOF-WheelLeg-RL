@@ -1036,6 +1036,15 @@ def spawn_fallen_state(
     env._spawn_command[env_ids] = torch.where(
         folded & hold, torch.zeros_like(draw), torch.ones_like(draw)
     )
+    # Remembered for the rest of the episode. The terrain curriculum must not read a
+    # recovery or a lie-still episode as "this robot failed to travel": a third of
+    # episodes start on the ground on purpose and go nowhere by design, and counting
+    # them as failures collapses the whole curriculum to its easiest row.
+    if not hasattr(env, "_spawned_on_ground"):
+        env._spawned_on_ground = torch.zeros(
+            env.num_envs, dtype=torch.bool, device=env.device
+        )
+    env._spawned_on_ground[env_ids] = selected
 
     if not bool(selected.any()):
         return

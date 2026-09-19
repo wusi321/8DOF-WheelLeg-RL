@@ -308,12 +308,28 @@ def terrain_levels_vel_strict(
     cmd_speed = torch.norm(command[env_ids, :2], dim=1)
 
     # Upgrade: crossed half the tile width
-    move_up = distance > terrain_generator.size[0] / 2
+    # Absolute bars, set where this robot actually operates. The old pair was
+    # unreachable: promotion wanted half the 8 m tile, and demotion fired below
+    # cmd_speed * 20 s * 0.33 -- about 2.3 m -- while the robot covers 0.6-0.8 m an
+    # episode. So every environment was demoted every episode, the terrain collapsed
+    # to row 0, difficulty went to zero, and the machine spent whole runs on ground
+    # where no slope was steep enough to bend a leg and no step tall enough to need
+    # one, even though the legs can reach an 18 cm step. Nothing downstream of that
+    # can teach climbing, which makes these two numbers the first thing to fix.
+    move_up = distance > 1.0
+    # Reverse-curriculum episodes are excluded rather than measured against the bar.
+    # A third of episodes begin on the ground on purpose -- folded and told to stay
+    # flat, or folded and told to stand up -- and travel nothing by design.
+    spawned_on_ground = getattr(env, "_spawned_on_ground", None)
+    if spawned_on_ground is not None:
+        move_up = move_up & ~spawned_on_ground[env_ids].bool()
 
     # Downgrade: traveled less than 33% of commanded target distance.
     # Absolute threshold 鈮?cmd_speed 脳 10m, identical to DreamWaQ / HIMLoco / LocoLeggedWheel
     # which use 50% 脳 20s episode = 10m. Adjusted for the longer 30s episode here.
-    move_down = (distance < cmd_speed * env.max_episode_length_s * 0.33) & ~move_up
+    move_down = (distance < 0.1) & ~move_up
+    if spawned_on_ground is not None:
+        move_down = move_down & ~spawned_on_ground[env_ids].bool()
 
 
 

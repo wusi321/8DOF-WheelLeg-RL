@@ -493,6 +493,26 @@ class EnvironmentConfigTests(unittest.TestCase):
         self.assertIn("standing.base_contact_penalty_relieved", cfg)
         self.assertIn('"scale": standing.BASE_CONTACT_RELIEF', cfg)
 
+    def test_terrain_curriculum_bars_are_reachable(self):
+        """The old bars demoted every environment every episode.
+
+        Promotion wanted half the 8 m tile and demotion fired below
+        cmd_speed * 20 s * 0.33, about 2.3 m, while the robot covers 0.6-0.8 m an
+        episode. Difficulty then collapsed to zero and the machine spent whole runs
+        on ground where nothing needed a leg to move, even though the legs can reach
+        an 18 cm step.
+        """
+        source = (root / "src/wheelleg/mdp/curriculums.py").read_text(encoding="utf-8")
+        self.assertIn("move_up = distance > 1.0", source)
+        self.assertIn("move_down = (distance < 0.1) & ~move_up", source)
+        self.assertNotIn("terrain_generator.size[0] / 2", source)
+        self.assertNotIn("max_episode_length_s * 0.33", source)
+        # Reverse-curriculum episodes travel nothing by design and must be excluded
+        # rather than counted as failures.
+        self.assertIn("_spawned_on_ground", source)
+        spawn = (root / "src/wheelleg/mdp/standing.py").read_text(encoding="utf-8")
+        self.assertIn("env._spawned_on_ground[env_ids] = selected", spawn)
+
     def test_terrain_difficulty_never_starts_at_zero(self):
         """Difficulty 0 makes obstacle terrains literally flat."""
         source = (root / "src/wheelleg/config/env_cfgs.py").read_text(encoding="utf-8")
