@@ -1032,6 +1032,81 @@ def blocked_stall_cost(env, command_name="twist", cap=2.0):
     return torch.clamp(env._blocked_seconds, max=cap)
 
 
+# ---------------------------------------------------------------------------
+# Leg length, and why the knee never moves.
+#
+# Every term that touches the knee is a penalty for deviating from the default
+# stance -- joint_pos_penalty_sagittal, joint_pos_penalty_ab, standing_pose,
+# posture_pose -- plus leg_symmetry, which penalises the two knees for *differing*.
+# No positive term names a joint at all: they name body level, body height and
+# velocity, and all three can be delivered by the hip alone. The hip axis is
+# 1 0 0, the roll axis, so swinging the leg sideways changes the wheel's height
+# without changing the leg's length, and it is the one joint with no penalty
+# attached. Roll adaptation therefore goes through the hip and the body, and the
+# knee is redundant and stays at its default. Measured on a converged run, the six
+# leg joints together sat within 0.089 rad of the stance and the action standard
+# deviation was 0.14, so the knee's one-sigma excursion was 2.7 degrees.
+#
+# The reference project does not have this problem because its action space is
+# (hip angle, leg length, wheel velocity) per leg, with leg length a first-class
+# action. Here the action is raw joint angles and leg length is a redundant
+# nonlinear function of thigh and knee, so the gradient that reduces penalties
+# points at freezing both rather than at shortening the leg, which is why
+# retuning rewards never helped.
+#
+# These measure leg length where only the thigh and knee can change it: the
+# distance from the hip body origin to the wheel body origin. The hip joint axis
+# passes through the hip body origin, so rotating the hip leaves it untouched.
+# ---------------------------------------------------------------------------
+def knee_excursion(env, asset_cfg=None):
+    """[B] mean absolute knee deviation from its default, in radians.
+
+    Instrumentation only, and it answers a question the reward cannot: no term
+    names a joint, so nothing in the logs says whether the knee moves.
+    """
+    asset = env.scene["wheelleg"]
+    ids, _ = asset.find_joints(_LEG_JOINTS, preserve_order=True)
+    ids = torch.as_tensor(ids, device=env.device)
+    deviation = torch.abs(
+        asset.data.joint_pos[:, ids] - asset.data.default_joint_pos[:, ids]
+    )
+    # Columns are left hip, thigh, knee, right hip, thigh, knee.
+    return 0.5 * (deviation[:, 2] + deviation[:, 5])
+
+
+def leg_lengths(env, hip_cfg=None, wheel_cfg=None):
+    """[B, 2] hip-to-axle distance per leg, in metres.
+
+    Only the thigh and knee sit between the two bodies, so this is leg length and
+    not a stance angle.
+    """
+    asset = env.scene["wheelleg"]
+    hip = asset.data.body_link_pos_w[:, hip_cfg.body_ids, :]
+    wheel = asset.data.body_link_pos_w[:, wheel_cfg.body_ids, :]
+    return torch.linalg.norm(hip - wheel, dim=-1)
+
+
+def leg_length_diff(env, hip_cfg=None, wheel_cfg=None):
+    """[B] absolute difference between the two legs' lengths, in metres."""
+    lengths = leg_lengths(env, hip_cfg=hip_cfg, wheel_cfg=wheel_cfg)
+    return torch.abs(lengths[:, 0] - lengths[:, 1])
+
+
+def leg_length_mismatch_cost(env, hip_cfg=None, wheel_cfg=None):
+    """[B] distance from the length difference the terrain actually asks for.
+
+    On a lateral slope the wheels rest at different heights and holding the body
+    level means the uphill leg is shorter by exactly that much, so the legs must
+    differ by the signed axle height difference. Nothing said so before and the hip
+    could absorb the roll without shortening anything, so it did. Signed, because
+    which leg is the short one is the whole point.
+    """
+    lengths = leg_lengths(env, hip_cfg=hip_cfg, wheel_cfg=wheel_cfg)
+    z = env.scene["wheelleg"].data.body_link_pos_w[:, wheel_cfg.body_ids, 2]
+    required = z[:, 0] - z[:, 1]  # left minus right: the uphill wheel is higher
+    return torch.abs((lengths[:, 1] - lengths[:, 0]) - required)
+
+
 def body_level_error_recovery_scaled(env, scale=FALLEN_ATTEMPT_SCALE, **kwargs):
     """``body_level_error`` with the failed-fall allowance applied.
 

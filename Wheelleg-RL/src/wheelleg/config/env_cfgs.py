@@ -364,6 +364,25 @@ def _posture_contract(cfg, enforce_standing=True):
     cfg.rewards["blocked_stall_cost"] = RewardTermCfg(
         func=standing.blocked_stall_cost, weight=-0.8, params={"cap": 1.0})
 
+    # Leg length: the quantity no term named before. The two metrics answer whether
+    # the knee moves at all, and the reward gives it somewhere to go. The hip bodies
+    # are spelled as the model spells them, including the inconsistent
+    # capitalisation; a wrong name fails loudly on the first reward compute rather
+    # than quietly contributing zero.
+    hip_cfg = SceneEntityCfg(
+        "wheelleg", body_names=("left_hip_Link", "right_hip_link")
+    )
+    cfg.metrics["knee_excursion_rad"] = MetricsTermCfg(func=standing.knee_excursion)
+    cfg.metrics["leg_length_diff_m"] = MetricsTermCfg(
+        func=standing.leg_length_diff,
+        params={"hip_cfg": hip_cfg, "wheel_cfg": wheel_cfg},
+    )
+    cfg.rewards["leg_length_mismatch"] = RewardTermCfg(
+        func=standing.leg_length_mismatch_cost,
+        weight=-20.0,
+        params={"hip_cfg": hip_cfg, "wheel_cfg": wheel_cfg},
+    )
+
     return cfg
 
 
