@@ -1,0 +1,52 @@
+name: validate
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: validate-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  contract:
+    name: contract tests (no GPU)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Run the dependency-free contract tests
+        working-directory: Wheelleg-RL
+        run: |
+          python -m unittest -v \
+            tests.test_stance \
+            tests.test_urdf_geometry \
+            tests.test_entity_bindings
+
+      - name: Check that every URDF and MJCF document parses
+        working-directory: Wheelleg-RL
+        run: |
+          python - <<'PY'
+          import sys
+          import xml.etree.ElementTree as ET
+          from pathlib import Path
+
+          files = sorted(Path("../robot_description").rglob("*.urdf"))
+          files += sorted(Path("mjcf").glob("*.xml"))
+          if not files:
+              sys.exit("no model files found")
+          for path in files:
+              ET.parse(path)
+              print(f"ok  {path}")
+          print(f"parsed {len(files)} model files")
+          PY

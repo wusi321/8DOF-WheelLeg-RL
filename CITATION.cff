@@ -1,0 +1,39 @@
+cff-version: 1.2.0
+message: "If you use this work, please cite it as below."
+title: "8DOF WheelLeg RL: an open reinforcement-learning stack for an 8-DOF wheel-legged robot"
+abstract: >-
+  Reinforcement-learning training stack for an 8-DOF two-wheel-legged robot: URDF to MJCF
+  conversion, an mjlab + MuJoCo Warp pipeline (200 Hz physics, 50 Hz policy), PPO with a
+  staged curriculum over balance, velocity tracking, slopes, rough terrain, stairs and fall
+  recovery, domain randomisation, and W&B logging.
+type: software
+authors:
+  - name: "wusi321"
+    website: "https://github.com/wusi321"
+version: 1.0.0
+date-released: 2026-10-22
+license: MIT
+repository-code: "https://github.com/wusi321/8DOF-WheelLeg-RL"
+url: "https://github.com/wusi321/8DOF-WheelLeg-RL"
+keywords:
+  - reinforcement learning
+  - legged robotics
+  - wheel-legged robot
+  - MuJoCo
+  - mjlab
+  - PPO
+  - curriculum learning
+  - robot simulation
+identifiers:
+  - type: url
+    value: "https://github.com/wusi321/8DOF-WheelLeg-RL"
+    description: "Source repository"
+references:
+  - type: software
+    title: "mjlab: Isaac Lab's manager-based API on MuJoCo Warp"
+    authors:
+      - name: "mujocolab"
+    url: "https://github.com/mujocolab/mjlab"
+  - type: software
+    title: "RC_WheelLeg: 16-DOF wheel-legged robot platform"
+    url: "https://github.com/zeitvex/RC_WheelLeg"

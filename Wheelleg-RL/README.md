@@ -9,7 +9,7 @@ Wheelleg-RL/
 ├─ src/wheelleg/              # 8DOF 任务、机器人配置、奖励、课程
 ├─ mjcf/8dof_wheelleg.xml     # 由 8DOF URDF 转换的 MuJoCo 模型
 ├─ mjcf/meshes/               # 8DOF 左右腿和轮子网格
-├─ mjlab/                     # 固定版本的本地 MJLab 依赖
+├─ mjlab/                     # 固定版本的 MJLab 快照（Apache-2.0，见 PROVENANCE.md）
 ├─ scripts/                   # 安装、转换、训练脚本
 ├─ configs/training.yaml      # 训练课程和 W&B 选项
 ├─ tests/                     # 模型契约测试
@@ -32,7 +32,7 @@ Wheelleg-RL/
 要求：Ubuntu 22.04、Python 3.10–3.13、NVIDIA 驱动/CUDA、可用 GPU、`uv`。从任意目录执行均可，脚本会自动定位项目根目录：
 
 ```bash
-bash /root/Wheelleg/8DOF-WheelLeg-RL/Wheelleg-RL/scripts/setup_ubuntu.sh
+bash scripts/setup_ubuntu.sh
 ```
 
 安装脚本默认测速并分别选择最快的 APT 与 PyPI 镜像。候选源包括清华、阿里云、中科大、腾讯云、华为云、北外、上海交大和南京大学。
@@ -55,7 +55,7 @@ bash scripts/setup_ubuntu.sh
 安装完成后检查：
 
 ```bash
-cd /root/Wheelleg/8DOF-WheelLeg-RL/Wheelleg-RL
+cd Wheelleg-RL
 uv run list-envs | grep Wheelleg
 nvidia-smi
 ```
@@ -91,7 +91,7 @@ NUM_ENVS=2048 ITERS=8000 bash scripts/train.sh recovery
 想先跑一轮全地形实验，用：
 
 ```bash
-cd ~/Wheelleg/8DOF-WheelLeg-RL/Wheelleg-RL
+cd Wheelleg-RL
 NUM_ENVS=2048 ITERS=1000 bash scripts/train.sh rough
 ```
 
@@ -383,7 +383,7 @@ step_height = range[0] + difficulty × (range[1] - range[0])
 
 ### 摔倒与起立：照搬 MicroDuck VelStand 的成熟结构
 
-摔倒起立的奖励设计参考 `microduck_rl/`（MicroDuck 的 VelStand 任务，注释里记录了多轮失败实验）。它的结论直接套用到本项目：
+摔倒起立的奖励设计参考 MicroDuck 的 VelStand 任务（`microduck_rl`，未随本仓库发布，仅作设计对照；注释里记录了多轮失败实验）。它的结论直接套用到本项目：
 
 | 规则（原文教训） | 本项目的实现 |
 |---|---|
@@ -405,7 +405,7 @@ fallen_tax        -1.0    attempt scale    0.1×    body_level        −10（�
 
 ### 收起的姿态与双计时器重置
 
-`完全趴下落地.txt` 给的角度经 `scripts/folded_pose_check.py` 验算：
+`robot_description/完全趴下落地.txt` 给的角度经 `scripts/folded_pose_check.py` 验算：
 
 ```
 髋 +0.91  大腿 +1.31  膝 -2.62                    ← 报告值
@@ -561,7 +561,7 @@ uv run python tests/test_standing.py      # 数值约束，需要 torch/MuJoCo
 
 ### 与 16DOF 参考工程的对照
 
-对照 `05_software-16DOF四轮足机械狗-MJlab-强化学习训练算法/train/rc_mjlab/`：
+对照 16DOF 参考工程（本地参考代码，未随本仓库发布）的 `train/rc_mjlab/`：
 
 - **动作配置已经一致，无需改动**：腿部 `scale` 髋 0.125 / 其余 0.25、`use_default_offset=True`、低通 5 Hz；轮部 `scale=5.0`、低通 15 Hz；延迟 0–2 控制步（0–40 ms）；两者都没有显式动作裁剪。低通公式同为 `alpha = 1-exp(-2πf_c/f_s)`，且都是「先低通、后 scale」。
 - 参考工程 rough **同样 pop 掉 `upright`**，只留 `upward`（权重 0.5）——它也存在姿态约束偏弱的问题，不是可以直接照搬的答案。
@@ -581,7 +581,7 @@ uv run python tests/test_standing.py      # 数值约束，需要 torch/MuJoCo
 
 力矩上限的作用方式是 `forcelimited=True` + `forcerange=±上限`，即无论位置误差多大，关节力矩都被裁到该范围。轮速指令本身**不裁剪**（`ctrllimited=False`），所以轮子没有显式最高转速，只有力矩上限在限制加速度。
 
-**这些数字不是这台机器人的实测电机参数。** 原始 URDF 里每个关节都导出为 `<limit ... effort="0" velocity="0" />`，即**机器人描述文件完全没有力矩信息**。当前数值是从 16DOF 参考机（`05_software-16DOF...`，那台机器所有 16 个执行器都是 **17 N·m**，且机体高度 0.42 m）按比例手改下来的占位值。
+**这些数字不是这台机器人的实测电机参数。** 原始 URDF 里每个关节都导出为 `<limit ... effort="0" velocity="0" />`，即**机器人描述文件完全没有力矩信息**。当前数值是从 16DOF 参考机（本地参考代码，未随本仓库发布；那台机器所有 16 个执行器都是 **17 N·m**，且机体高度 0.42 m）按比例手改下来的占位值。
 
 按几何估算的**静态保持力矩**（整机 1.6 kg，单腿承担 7.8 N，`uv run python scripts/stance_kinematics.py` 可复现）：
 

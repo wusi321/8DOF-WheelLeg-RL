@@ -15,3 +15,15 @@ Wheelleg-RL/wandb/
 # Editor and OS noise
 .DS_Store
 Thumbs.db
+
+# Local reference material that is not part of this repository
+# (kept on disk for comparison only; see the scope section of the root README)
+05_software-16DOF四轮足机械狗-MJlab-强化学习训练算法/
+microduck/
+microduck_rl/
+说明.txt
+
+# Local archives and tool scratch files
+*.zip
+.agents/
+skills-lock.json

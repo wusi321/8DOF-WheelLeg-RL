@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: The 16-DOF platform this work precedes
+    url: https://github.com/zeitvex/RC_WheelLeg
+    about: Real-machine control, ROS 2 deployment and Sim2Real belong to the 16-DOF project, not here.

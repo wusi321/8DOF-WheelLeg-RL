@@ -1,0 +1,44 @@
+name: Feature request
+description: Propose a task, a curriculum stage, a reward change or a tooling improvement.
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Reward and curriculum changes are the interesting ones: please say what the robot
+        should do differently and how the change would be measured, because this project
+        treats every reward weight as a claim that has to survive a training run.
+        Design rationale and measured numbers go into `Wheelleg-RL/README.md`.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What the current stack cannot do, or does badly.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed change
+      description: Which task, module or script would change, and roughly how.
+    validations:
+      required: true
+
+  - type: textarea
+    id: measurement
+    attributes:
+      label: How to tell whether it worked
+      description: Metric, threshold and the training budget you expect it to need.
+      placeholder: Recovery success rate above 60% within 8000 iterations at 2048 envs, with a 64-env smoke run first.
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: scope
+    attributes:
+      label: Scope
+      options:
+        - label: This is inside this repository's scope (training stack, robot description, docs).
+        - label: This is about real-machine control, ROS 2 or ONNX export (out of scope here).

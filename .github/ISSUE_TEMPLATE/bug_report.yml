@@ -1,0 +1,76 @@
+name: Bug report
+description: Something in training, replay or the model does not behave as documented.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Before filing, please check that the run reached the stage you expect
+        (`uv run list-envs | grep Wheelleg` must list `Wheelleg-*`, not the old `Robot-*` tasks)
+        and that the dependency-free contract tests pass:
+
+        ```bash
+        cd Wheelleg-RL
+        python -m unittest tests.test_stance tests.test_urdf_geometry tests.test_entity_bindings
+        ```
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: The symptom, and what you expected instead.
+      placeholder: The terrain curriculum stays at level 0 for 200 iterations even though the robot walks.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: stage
+    attributes:
+      label: Stage
+      options:
+        - flat
+        - rough
+        - recovery
+        - play / checkpoint replay
+        - model conversion (URDF to MJCF)
+        - other
+    validations:
+      required: true
+
+  - type: input
+    id: command
+    attributes:
+      label: Command
+      description: The exact command line, including NUM_ENVS and ITERS.
+      placeholder: ITERS=5 NUM_ENVS=64 bash scripts/train.sh rough
+    validations:
+      required: true
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: |
+        Output of `uv run list-envs | grep Wheelleg`, GPU model, driver version,
+        and `uv run python -c 'import torch; print(torch.__version__, torch.cuda.is_available())'`.
+      render: text
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: The first traceback or the failing metrics lines, not only the last line.
+      render: text
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checks
+      options:
+        - label: I ran a 5-iteration / 64-environment smoke test and it reproduces.
+        - label: The contract tests above pass on this commit.
+        - label: This is not a question about a checkpoint that was trained on an older, incompatible config.
